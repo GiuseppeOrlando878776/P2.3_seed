@@ -1,0 +1,2 @@
+Unconstrained vuol dire usare la classe ActiveConstraints invede di fare i loop o imporre boundary conditions a mano, ma  i risulati sono gli stessi dei vari global refinements
+Naive_Local_Ref vuol dire usare la versione a mano di refine_grid, calcolare l'error estimator se si vuole ma non migliorare la soluzione ma solo aggiungere dofs

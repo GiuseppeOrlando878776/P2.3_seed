@@ -1,0 +1,10 @@
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/rebuild_cache.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/info.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/strip_comments.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/edit_cache.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/step-6.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/debug.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/run.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/release.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/distclean.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab05_last_year/step-6/CMakeFiles/runclean.dir

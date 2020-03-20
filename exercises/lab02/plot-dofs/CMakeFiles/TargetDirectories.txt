@@ -1,0 +1,10 @@
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/edit_cache.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/rebuild_cache.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/info.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/strip_comments.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/debug.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/run.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/plot-dofs.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/release.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/distclean.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab02/plot-dofs/CMakeFiles/runclean.dir

@@ -1,0 +1,10 @@
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/edit_cache.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/rebuild_cache.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/info.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/strip_comments.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/step-1.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/run.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/release.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/debug.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/distclean.dir
+/home/giuseppe/bin/P2.3_seed/exercises/lab01/step-1/step-1/CMakeFiles/runclean.dir

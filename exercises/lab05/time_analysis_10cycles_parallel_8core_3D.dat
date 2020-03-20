@@ -1,0 +1,36 @@
+
+
++---------------------------------------------+------------+------------+
+| Total CPU time elapsed since start          |      65.2s |            |
+|                                             |            |            |
+| Section                         | no. calls |  CPU time  | % of total |
++---------------------------------+-----------+------------+------------+
+| Assemble System                 |        10 |      3.21s |       4.9% |
+| Compute Error                   |        10 |      7.03s |        11% |
+| Estimate error                  |        10 |      3.55s |       5.4% |
+| Make Grid                       |         1 |    0.0316s |         0% |
+| Mark cell for refinement        |        10 |      1.37s |       2.1% |
+| Output                          |        10 |      13.8s |        21% |
+| Refine grid                     |         9 |      5.98s |       9.2% |
+| Setup System                    |        10 |      4.03s |       6.2% |
+| Solve                           |        10 |      9.48s |        15% |
++---------------------------------+-----------+------------+------------+
+
+
+
++---------------------------------------------+------------+------------+
+| Total wallclock time elapsed since start    |      78.9s |            |
+|                                             |            |            |
+| Section                         | no. calls |  wall time | % of total |
++---------------------------------+-----------+------------+------------+
+| Assemble System                 |        10 |       3.9s |       4.9% |
+| Compute Error                   |        10 |      8.95s |        11% |
+| Estimate error                  |        10 |      4.36s |       5.5% |
+| Make Grid                       |         1 |     0.032s |         0% |
+| Mark cell for refinement        |        10 |      1.54s |       1.9% |
+| Output                          |        10 |      16.4s |        21% |
+| Refine grid                     |         9 |      6.99s |       8.8% |
+| Setup System                    |        10 |      5.01s |       6.4% |
+| Solve                           |        10 |      11.7s |        15% |
++---------------------------------+-----------+------------+------------+
+
