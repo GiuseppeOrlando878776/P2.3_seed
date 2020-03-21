@@ -1,0 +1,10 @@
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/edit_cache.dir
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/rebuild_cache.dir
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/info.dir
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/strip_comments.dir
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/step-21.dir
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/debug.dir
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/run.dir
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/release.dir
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/distclean.dir
+/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles/runclean.dir

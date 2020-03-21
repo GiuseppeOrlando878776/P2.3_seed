@@ -66,9 +66,32 @@
 // such functionality:
 #include <deal.II/base/tensor_function.h>
 
+// Include for TimerOutput
+#include <deal.II/base/timer.h>
+
+// Include for parameter handler
+#include <deal.II/base/parameter_handler.h>
+
+// Includes for parallel version
+#include <deal.II/base/mpi.h>
+
+#include <deal.II/base/conditional_ostream.h>
+#include <deal.II/base/index_set.h>
+
+#include <deal.II/distributed/tria.h>
+
+#include <deal.II/grid/filtered_iterator.h>
+
+#include <deal.II/lac/generic_linear_algebra.h>
+
 // The last step is as in all previous programs:
 namespace Step21 {
   using namespace dealii;
+
+  namespace LA {
+     //using namespace dealii::LinearAlgebraPETSc;
+     using namespace dealii::LinearAlgebraTrilinos;
+  }
 
 
   // @sect3{The <code>TwoPhaseFlowProblem</code> class}
@@ -94,11 +117,19 @@ namespace Step21 {
   template<int dim>
   class TwoPhaseFlowProblem {
   public:
-    TwoPhaseFlowProblem(const unsigned int degree);
+    struct Parameters;    /*! \brief Forward declaration of the class to handle some parameters */
+    TwoPhaseFlowProblem(const std::string& parameter_filename);
     void run();
 
+  protected:
+    std::shared_ptr<Parameters> parameters; /*! \brief Variable of the class to handle parameters */
+
   private:
-    void   make_grid_and_dofs();
+    void   make_grid();
+    void   setup_dofs();
+    void   setup_dofs_initial_condition();  /*! \brief Auxiliary function to set dofs for projection of initial condition */
+    void   assemble_initial_condition();    /*! \brief Auxiliary function to assemble the projection system for initial data */
+    void   solve_initial_condition();       /*! \brief Auxiliary function to solve the projection system for initial data */
     void   assemble_system();
     void   assemble_rhs_S();
     double get_maximal_velocity() const;
@@ -106,24 +137,66 @@ namespace Step21 {
     void   project_back_saturation();
     void   output_results() const;
 
+    MPI_Comm  communicator;   /*! \brief Communicator for parallel distributed memory */
+
     const unsigned int degree;
 
-    Triangulation<dim> triangulation;
-    FESystem<dim>      fe;
-    DoFHandler<dim>    dof_handler;
+    parallel::distributed::Triangulation<dim> triangulation;
+    FESystem<dim>                             fe;
+    DoFHandler<dim>                           dof_handler;
+    DoFHandler<dim>                           tmp_dof_handler;  /*! \brief Auxiliary DofHandler initial condition projection */
 
-    BlockSparsityPattern      sparsity_pattern;
-    BlockSparseMatrix<double> system_matrix;
+    LA::MPI::SparseMatrix initial_matrix; /*! \brief Auxiliary matrix for initial condition projection */
+    LA::MPI::Vector initial_rhs;          /*! \brief Auxiliary vector for initial condition projection */
+
+    IndexSet   locally_owned_dofs,    /*! \brief Set of locally owned dofs */
+               locally_relevant_dofs; /*! \brief Set of locally relevant dofs */
+
+    std::vector<IndexSet> locally_owned_dofs_partition,     /*! \brief Partition between variables of locally owned dofs */
+                          locally_relevant_dofs_partition;  /*! \brief Partition between variables of locally relevant dofs */
+
+    LA::MPI::BlockVector effective_solution;  /*! \brief Auxiliary vector with only owned dofs for solution */
+
+    LA::MPI::BlockSparseMatrix system_matrix;
 
     const unsigned int n_refinement_steps;
 
     double       time_step;
     unsigned int timestep_number;
+    double       end_time;                                /*! \brief End time of simulation */
     double       viscosity;
 
-    BlockVector<double> solution;
-    BlockVector<double> old_solution;
-    BlockVector<double> system_rhs;
+    LA::MPI::BlockVector solution;
+    LA::MPI::BlockVector old_solution;
+    LA::MPI::BlockVector system_rhs;
+
+    LA::MPI::BlockVector locally_relevant_solution;    /*! \brief BlockVector to store locally relevant solution */
+
+    ConditionalOStream  pcout;       /*! \brief Output stream only for rank 0 */
+
+    std::ofstream       time_out;     /*!  \brief Auxiliary ofstream for time output */
+    ConditionalOStream  ptime_out;    /*!  \brief Auxiliary conditional stream for time output */
+    TimerOutput         time_table;   /*! \brief Table for time */
+
+  public:
+    struct Parameters {
+      Parameters(const std::string& parameter_filename);  /*! \brief Class constructor with the name of the file */
+
+      static void declare_parameters(ParameterHandler& prm);   /*! \brief Declaration of parameters using ParameterHandler. It is static
+                                                                          because it is associated to the class and not to a particular instance. */
+      void parse_parameters(ParameterHandler& prm);            /*! \brief Pase function with auxilium of ParameterHandler */
+
+      unsigned int degree;    /*! \brief Polynomial degree of FE spaces */
+
+      double end_time;  /*! \brief End time of simulation */
+
+      unsigned int n_global_refinement; /*! \brief Number of global refinement */
+
+      double viscosity;  /*! \brief Viscosity of the flow */
+
+      std::string time_name;  /*! \brief File name of auxiliary stream for output of time */
+    };
+
   };
 
 
@@ -174,9 +247,7 @@ namespace Step21 {
   template<int dim>
   class SaturationBoundaryValues : public Function<dim> {
   public:
-    SaturationBoundaryValues()
-      : Function<dim>(1)
-    {}
+    SaturationBoundaryValues() : Function<dim>(1) {}
 
     virtual double value(const Point<dim> &p,
                          const unsigned int /*component*/ = 0) const override {
@@ -374,70 +445,81 @@ namespace Step21 {
   // in at most <code>src.size()</code> steps.) As a consequence, we set the
   // maximum number of iterations equal to the maximum of the size of the linear
   // system and 200.
-  template<class MatrixType>
+  template<class MatrixType, class PrecondType = PreconditionIdentity>
   class InverseMatrix : public Subscriptor {
   public:
-    InverseMatrix(const MatrixType &m) : matrix(&m) {}
+    //Assert(std::is_default_constructable<PrecondType>(), ExcMessage("Preconditioner type not default constructable"));
+    InverseMatrix(const MatrixType& m, const PrecondType& p = PrecondType()) : matrix(&m), preconditioner(p) {}
 
-    void vmult(Vector<double> &dst, const Vector<double> &src) const {
+    void vmult(LA::MPI::Vector& dst, const LA::MPI::Vector& src) const {
       SolverControl solver_control(std::max<unsigned int>(src.size(), 200),
                                    1e-8 * src.l2_norm());
-      SolverCG<>    cg(solver_control);
+      SolverCG<LA::MPI::Vector>   cg(solver_control);
 
       dst = 0;
 
-      cg.solve(*matrix, dst, src, PreconditionIdentity());
+      cg.solve(*matrix, dst, src, preconditioner);
     }
 
   private:
     const SmartPointer<const MatrixType> matrix;
+    const PrecondType& preconditioner;
   };
 
 
 
   class SchurComplement : public Subscriptor {
   public:
-    SchurComplement(const BlockSparseMatrix<double> &          A,
-                    const InverseMatrix<SparseMatrix<double>> &Minv) :
+    SchurComplement(const LA::MPI::BlockSparseMatrix&          A,
+                    const InverseMatrix<LA::MPI::SparseMatrix> &Minv,
+                    const IndexSet& local_owned_vel,
+                    const MPI_Comm& mpi_comm) :
       system_matrix(&A),
       m_inverse(&Minv),
-      tmp1(A.block(0, 0).m()),
-      tmp2(A.block(0, 0).m())
+      tmp1(local_owned_vel, mpi_comm),
+      tmp2(tmp1)
       {}
 
-    void vmult(Vector<double> &dst, const Vector<double> &src) const {
+    void vmult(LA::MPI::Vector& dst, const LA::MPI::Vector& src) const {
       system_matrix->block(0, 1).vmult(tmp1, src);
       m_inverse->vmult(tmp2, tmp1);
       system_matrix->block(1, 0).vmult(dst, tmp2);
     }
 
   private:
-    const SmartPointer<const BlockSparseMatrix<double>>           system_matrix;
-    const SmartPointer<const InverseMatrix<SparseMatrix<double>>> m_inverse;
+    const SmartPointer<const LA::MPI::BlockSparseMatrix>           system_matrix;
+    const SmartPointer<const InverseMatrix<LA::MPI::SparseMatrix>> m_inverse;
 
-    mutable Vector<double> tmp1, tmp2;
+    mutable LA::MPI::Vector tmp1, tmp2;
   };
 
 
 
   class ApproximateSchurComplement : public Subscriptor {
   public:
-    ApproximateSchurComplement(const BlockSparseMatrix<double> &A) :
+    ApproximateSchurComplement(const LA::MPI::BlockSparseMatrix &A,
+                               const IndexSet& local_owned_vel,
+                               const MPI_Comm& mpi_comm) :
       system_matrix(&A),
-      tmp1(A.block(0, 0).m()),
-      tmp2(A.block(0, 0).m())
+      tmp1(local_owned_vel, mpi_comm),
+      tmp2(tmp1)
       {}
 
-    void vmult(Vector<double> &dst, const Vector<double> &src) const {
+    void vmult(LA::MPI::Vector &dst, const LA::MPI::Vector &src) const {
       system_matrix->block(0, 1).vmult(tmp1, src);
-      system_matrix->block(0, 0).precondition_Jacobi(tmp2, tmp1);
+      auto tmp_Jacobi_precond = LA::MPI::PreconditionJacobi();
+      tmp_Jacobi_precond.initialize(system_matrix->block(0,0));
+      InverseMatrix<LA::MPI::SparseMatrix,
+                    decltype(tmp_Jacobi_precond)> tmp_matrix(system_matrix->block(0,0), tmp_Jacobi_precond);
+      tmp_matrix.vmult(tmp2,tmp1);
+      //system_matrix->block(0, 0).precondition_Jacobi(tmp2, tmp1);
       system_matrix->block(1, 0).vmult(dst, tmp2);
     }
 
   private:
-    const SmartPointer<const BlockSparseMatrix<double>> system_matrix;
+    const SmartPointer<const LA::MPI::BlockSparseMatrix> system_matrix;
 
-    mutable Vector<double> tmp1, tmp2;
+    mutable LA::MPI::Vector tmp1, tmp2;
   };
 
 
@@ -449,6 +531,64 @@ namespace Step21 {
   // try to get familiar with that program first, then most of what is
   // happening here should be mostly clear.
 
+  // First the constructor of the Parameters struct
+  template<int dim>
+  TwoPhaseFlowProblem<dim>::Parameters::Parameters(const std::string &parameter_filename):
+      degree(0),
+      end_time(1.0),
+      n_global_refinement(5),
+      viscosity(0.2),
+      time_name("Time_analysis") {
+
+        ParameterHandler prm;
+        TwoPhaseFlowProblem<dim>::Parameters::declare_parameters(prm);
+
+        std::ifstream parameter_file(parameter_filename);
+
+        if(!parameter_file.is_open()) {
+          std::ofstream parameter_out(parameter_filename);
+          prm.print_parameters(parameter_out, ParameterHandler::Text);
+
+          std::cerr<<"Input parameter file <" + parameter_filename +
+                     "> not found. Creating a default file."<<std::endl;
+
+          parameter_file.open(parameter_filename);
+        }
+
+        prm.parse_input(parameter_file);
+        parse_parameters(prm);
+      }
+
+
+
+  // Next we have a function that declares the parameters that we expect in
+  // the input file, together with their data types, default values and a
+  // description:
+  template <int dim>
+  void TwoPhaseFlowProblem<dim>::Parameters::declare_parameters(ParameterHandler &prm) {
+    prm.declare_entry("Degree", "0", Patterns::Integer(0), "Polynomial degree");
+    prm.declare_entry("End time", "1.0", Patterns::Double(0.0), "End time of the simulation.");
+    prm.declare_entry("Number global refinements", "5", Patterns::Integer(0), "Number of global refinements");
+    prm.declare_entry("Viscosity", "0.2", Patterns::Double(0.0), "Viscosity");
+    prm.declare_entry("Name file time", "Time_analysis", Patterns::Anything(), "name of the file for time table");
+    prm.declare_entry("Name file error", "Error_analysis", Patterns::Anything(), "name of the file for time table");
+  }
+
+
+  // And then we need a function that reads the contents of the
+  // ParameterHandler object we get by reading the input file and puts the
+  // results into variables that store the values of the parameters we have
+  // previously declared:
+  template <int dim>
+  void TwoPhaseFlowProblem<dim>::Parameters::parse_parameters(ParameterHandler &prm) {
+    this->degree              = prm.get_integer("Degree");
+    this->end_time            = prm.get_double("End time");
+    this->n_global_refinement = prm.get_integer("Number global refinements");
+    this->viscosity           = prm.get_double("Viscosity");
+    this->time_name           = prm.get("Name file time");
+  }
+
+
   // @sect4{TwoPhaseFlowProblem::TwoPhaseFlowProblem}
 
   // First for the constructor. We use $RT_k \times DQ_k \times DQ_k$
@@ -456,8 +596,11 @@ namespace Step21 {
   // before it is needed first, as described in a subsection of the
   // introduction.
   template<int dim>
-  TwoPhaseFlowProblem<dim>::TwoPhaseFlowProblem(const unsigned int degree) :
-    degree(degree),
+  TwoPhaseFlowProblem<dim>::TwoPhaseFlowProblem(const std::string& parameter_filename) :
+    parameters(std::make_shared<Parameters>(parameter_filename)),
+    communicator(MPI_COMM_WORLD),
+    degree(parameters->degree),
+    triangulation(communicator),
     fe(FE_RaviartThomas<dim>(degree),
        1,
        FE_DGQ<dim>(degree),
@@ -465,24 +608,45 @@ namespace Step21 {
        FE_DGQ<dim>(degree),
        1),
     dof_handler(triangulation),
-    n_refinement_steps(5),
+    tmp_dof_handler(triangulation),
+    n_refinement_steps(parameters->n_global_refinement),
     time_step(0),
     timestep_number(1),
-    viscosity(0.2)
-    {}
+    end_time(parameters->end_time),
+    viscosity(parameters->viscosity),
+    pcout(std::cout, Utilities::MPI::this_mpi_process(communicator) == 0),
+    time_out(parameters->time_name + "_" + Utilities::int_to_string(Utilities::MPI::n_mpi_processes(communicator)) + "proc.dat"),
+    ptime_out(time_out, Utilities::MPI::this_mpi_process(communicator) == 0),
+    time_table(communicator, ptime_out, TimerOutput::summary, TimerOutput::cpu_and_wall_times) {
+      //Reserve capacity for local partitions
+      locally_owned_dofs_partition.reserve(3);
+      locally_relevant_dofs_partition.reserve(3);
+
+    }
 
 
-
-  // @sect4{TwoPhaseFlowProblem::make_grid_and_dofs}
+  // @sect4{TwoPhaseFlowProblem::make_grid}
 
   // This next function starts out with well-known functions calls that create
   // and refine a mesh, and then associate degrees of freedom with it. It does
   // all the same things as in step-20, just now for three components instead
   // of two.
   template<int dim>
-  void TwoPhaseFlowProblem<dim>::make_grid_and_dofs() {
+  void TwoPhaseFlowProblem<dim>::make_grid() {
+    TimerOutput::Scope t(time_table, "Make grid");
+
     GridGenerator::hyper_cube(triangulation, 0, 1);
     triangulation.refine_global(n_refinement_steps);
+  }
+
+  // @sect4{TwoPhaseFlowProblem::setup_dofs}
+
+  // This next function starts associates degrees of freedom with triangulation. It does
+  // all the same things as in step-20, just now for three components instead
+  // of two.
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::setup_dofs() {
+    TimerOutput::Scope t(time_table, "Setup Dofs");
 
     dof_handler.distribute_dofs(fe);
     DoFRenumbering::component_wise(dof_handler);
@@ -493,51 +657,180 @@ namespace Step21 {
                        n_p = dofs_per_component[dim],
                        n_s = dofs_per_component[dim + 1];
 
-    std::cout << "Number of active cells: " << triangulation.n_active_cells()
-              << std::endl
-              << "Number of degrees of freedom: " << dof_handler.n_dofs()
-              << " (" << n_u << '+' << n_p << '+' << n_s << ')' << std::endl
-              << std::endl;
+    pcout << "Number of active cells: " << triangulation.n_global_active_cells()
+          << std::endl
+          << "Number of degrees of freedom: "
+          << " (" << n_u << '+' << n_p << '+' << n_s << ')' << std::endl
+          << std::endl;
 
-    const unsigned int n_couplings = dof_handler.max_couplings_between_dofs();
+    locally_owned_dofs = dof_handler.locally_owned_dofs();
+    locally_owned_dofs_partition.push_back(locally_owned_dofs.get_view(0,n_u));
+    locally_owned_dofs_partition.push_back(locally_owned_dofs.get_view(n_u,n_u + n_p));
+    locally_owned_dofs_partition.push_back(locally_owned_dofs.get_view(n_u + n_p, n_u + n_p + n_s));
 
-    sparsity_pattern.reinit(3, 3);
-    sparsity_pattern.block(0, 0).reinit(n_u, n_u, n_couplings);
-    sparsity_pattern.block(1, 0).reinit(n_p, n_u, n_couplings);
-    sparsity_pattern.block(2, 0).reinit(n_s, n_u, n_couplings);
-    sparsity_pattern.block(0, 1).reinit(n_u, n_p, n_couplings);
-    sparsity_pattern.block(1, 1).reinit(n_p, n_p, n_couplings);
-    sparsity_pattern.block(2, 1).reinit(n_s, n_p, n_couplings);
-    sparsity_pattern.block(0, 2).reinit(n_u, n_s, n_couplings);
-    sparsity_pattern.block(1, 2).reinit(n_p, n_s, n_couplings);
-    sparsity_pattern.block(2, 2).reinit(n_s, n_s, n_couplings);
+    DoFTools::extract_locally_relevant_dofs(dof_handler, locally_relevant_dofs);
+    locally_relevant_dofs_partition.push_back(locally_relevant_dofs.get_view(0,n_u));
+    locally_relevant_dofs_partition.push_back(locally_relevant_dofs.get_view(n_u,n_u + n_p));
+    locally_relevant_dofs_partition.push_back(locally_relevant_dofs.get_view(n_u + n_p, n_u + n_p + n_s));
 
-    sparsity_pattern.collect_sizes();
+    //We erase now the second component of the dofs_per_component since the call
+    //'count_dofs_per_component' computes the dofs for RT space as two components
+    //but in reality it is vectorial and so the dofs of one component are the info we want
+    dofs_per_component.erase(dofs_per_component.begin() + 1);
 
-    DoFTools::make_sparsity_pattern(dof_handler, sparsity_pattern);
-    sparsity_pattern.compress();
+    BlockDynamicSparsityPattern dsp(dofs_per_component, dofs_per_component);
+    DoFTools::make_sparsity_pattern(dof_handler, dsp);
+    SparsityTools::distribute_sparsity_pattern(dsp, dof_handler.locally_owned_dofs_per_processor(),
+                                               communicator, locally_relevant_dofs);
 
+    system_matrix.reinit(locally_owned_dofs_partition, dsp, communicator);
+    system_matrix.collect_sizes();
 
-    system_matrix.reinit(sparsity_pattern);
-
-
-    solution.reinit(3);
-    solution.block(0).reinit(n_u);
-    solution.block(1).reinit(n_p);
-    solution.block(2).reinit(n_s);
+    solution.reinit(locally_relevant_dofs_partition, communicator);
     solution.collect_sizes();
 
-    old_solution.reinit(3);
-    old_solution.block(0).reinit(n_u);
-    old_solution.block(1).reinit(n_p);
-    old_solution.block(2).reinit(n_s);
+    old_solution.reinit(solution);
     old_solution.collect_sizes();
 
-    system_rhs.reinit(3);
-    system_rhs.block(0).reinit(n_u);
-    system_rhs.block(1).reinit(n_p);
-    system_rhs.block(2).reinit(n_s);
+    effective_solution.reinit(locally_owned_dofs_partition, communicator);
+    effective_solution.collect_sizes();
+
+    system_rhs.reinit(locally_owned_dofs_partition, communicator);
     system_rhs.collect_sizes();
+
+    locally_relevant_solution.reinit(locally_owned_dofs_partition,
+                                     locally_relevant_dofs_partition,
+                                     communicator);
+  }
+
+  // @sect4{TwoPhaseFlowProblem::setup_dofs_initial_condition}
+
+  // This is the function that sets the dofs to project the initial
+  // condition in parallel. Since the only time dependent variable is the saturation
+  // we choose to build a new DofHandler object to deal only with the dofs related to
+  // that variable. In this way we pay something at level of construction but we are
+  // much more efficient in the resolution of the system
+
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::setup_dofs_initial_condition() {
+    TimerOutput::Scope t(time_table, "Setup dofs initial_condition");
+
+    // Extract the corresponding finite element space
+    const auto& tmp_fe = fe.get_sub_fe(dim + 1, 1);
+
+    // Build the new dof handler
+    tmp_dof_handler.distribute_dofs(tmp_fe);
+    DoFRenumbering::Cuthill_McKee(tmp_dof_handler);
+
+    // Build and distribute the sparsity pattern associated to this
+    // subspace
+    auto& initially_owned_dofs = tmp_dof_handler.locally_owned_dofs();
+
+    DynamicSparsityPattern tmp_dsp(tmp_dof_handler.n_dofs());
+    DoFTools::make_sparsity_pattern(tmp_dof_handler, tmp_dsp);
+    SparsityTools::distribute_sparsity_pattern(tmp_dsp, tmp_dof_handler.n_locally_owned_dofs_per_processor(),
+                                               communicator, initially_owned_dofs);
+
+    // Initialize matrices and vectors to store system for the projection of
+    // the initial condition
+    initial_matrix.reinit(initially_owned_dofs, tmp_dsp, communicator);
+    initial_rhs.reinit(initially_owned_dofs, communicator);
+    initial_matrix = 0;
+    initial_rhs = 0;
+  }
+
+  // @sect4{TwoPhaseFlowProblem::assemble_initial_condition}
+
+  // This is the function that assembles the linear system to project the initial
+  // condition in parallel. We have to deal with data only for saturation to solve
+  // (\phi_i_s,phi_i_j)F_j = (\phi_i_s,f), where f is the initial codition.
+
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::assemble_initial_condition() {
+    TimerOutput::Scope t(time_table, "Assemble initial_condition");
+
+    // Extract the corresponding finite element space
+    const auto& tmp_fe = fe.get_sub_fe(dim + 1, 1);
+
+    // Build the linear system to be solved
+    QGauss<dim>     quadrature_formula(degree + 2);
+
+    FEValues<dim>   fe_values(tmp_fe, quadrature_formula,
+                              update_values | update_quadrature_points | update_JxW_values);
+
+    const unsigned int dofs_per_cell = tmp_fe.dofs_per_cell;
+
+    const unsigned int n_q_points    = quadrature_formula.size();
+
+    FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
+    Vector<double>     local_rhs(dofs_per_cell);
+
+    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+
+    const InitialValues<dim> initial_condition;
+
+    std::vector<double>      rhs_values;
+    rhs_values.reserve(n_q_points);
+
+    for(const auto &cell : tmp_dof_handler.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        fe_values.reinit(cell);
+        local_matrix = 0;
+        local_rhs    = 0;
+        rhs_values.clear();
+
+        // Then we have to get the values of the initial condition:
+        for(const auto& actual_q_point: fe_values.get_quadrature_points())
+          rhs_values.emplace_back(initial_condition.value(actual_q_point, dim + 1));
+
+        // With all this, we can now loop over all the quadrature points and
+        // shape functions on this cell and assemble those parts of the matrix
+        // and right hand side that we deal with in this function.
+        for(unsigned int q = 0; q < n_q_points; ++q) {
+          for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+              for(unsigned int j = 0; j < dofs_per_cell; ++j) {
+                local_matrix(i, j) +=  (fe_values.shape_value(i, q) *
+                                        fe_values.shape_value(j, q)) *
+                                        fe_values.JxW(q);
+              }
+              local_rhs(i) += (fe_values.shape_value(i, q) * rhs_values[q]) * fe_values.JxW(q);
+          }
+        }
+
+        // The final step in the loop over all cells is to transfer local
+        // contributions into the global matrix and right hand side vector:
+        cell->get_dof_indices(local_dof_indices);
+        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+          for(unsigned int j = 0; j < dofs_per_cell; ++j)
+            initial_matrix.add(local_dof_indices[i],
+                               local_dof_indices[j],
+                               local_matrix(i, j));
+
+
+          initial_rhs(local_dof_indices[i]) += local_rhs(i);
+        }
+      }
+    }
+    initial_matrix.compress(VectorOperation::add);
+    initial_rhs.compress(VectorOperation::add);
+
+  }
+
+  // @sect4{TwoPhaseFlowProblem::assemble_initial_condition}
+
+  // This is the function that solves the linear system to project the initial
+  // condition in parallel.
+
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::solve_initial_condition() {
+    TimerOutput::Scope t(time_table, "Solve initial_condition");
+
+    SolverControl solver_control(effective_solution.block(2).size(),
+                                 1e-12 * initial_rhs.l2_norm());
+    SolverCG<LA::MPI::Vector>  cg(solver_control);
+    cg.solve(initial_matrix, effective_solution.block(2), initial_rhs, PreconditionIdentity());
+
+    old_solution = effective_solution;
   }
 
 
@@ -559,8 +852,10 @@ namespace Step21 {
   // namespace name.
   template<int dim>
   void TwoPhaseFlowProblem<dim>::assemble_system() {
+    TimerOutput::Scope t(time_table, "Assemble system");
+
     system_matrix = 0;
-    system_rhs    = 0;
+    system_rhs = 0;
 
     QGauss<dim>     quadrature_formula(degree + 2);
     QGauss<dim - 1> face_quadrature_formula(degree + 2);
@@ -598,6 +893,7 @@ namespace Step21 {
     const FEValuesExtractors::Scalar saturation(dim + 1);
 
     for(const auto &cell : dof_handler.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
         fe_values.reinit(cell);
         local_matrix = 0;
         local_rhs    = 0;
@@ -626,7 +922,7 @@ namespace Step21 {
         // individual terms in the contributions should be self-explanatory
         // given the explicit form of the bilinear form stated in the
         // introduction:
-        for(unsigned int q = 0; q < n_q_points; ++q)
+        for(unsigned int q = 0; q < n_q_points; ++q) {
           for(unsigned int i = 0; i < dofs_per_cell; ++i) {
               const double old_s = old_solution_values[q](dim + 1);
 
@@ -650,7 +946,7 @@ namespace Step21 {
 
               local_rhs(i) += (-phi_i_p * pressure_rhs_values[q]) * fe_values.JxW(q);
           }
-
+        }
 
         // Next, we also have to deal with the pressure boundary values. This,
         // again is as in step-20:
@@ -660,28 +956,32 @@ namespace Step21 {
 
               pressure_boundary_values.value_list(fe_face_values.get_quadrature_points(), boundary_values);
 
-              for(unsigned int q = 0; q < n_face_q_points; ++q)
+              for(unsigned int q = 0; q < n_face_q_points; ++q) {
                 for(unsigned int i = 0; i < dofs_per_cell; ++i) {
                     const Tensor<1, dim> phi_i_u = fe_face_values[velocities].value(i, q);
-
                     local_rhs(i) += -(phi_i_u * fe_face_values.normal_vector(q) *
                                       boundary_values[q] * fe_face_values.JxW(q));
                 }
+              }
           }
         }
 
         // The final step in the loop over all cells is to transfer local
         // contributions into the global matrix and right hand side vector:
         cell->get_dof_indices(local_dof_indices);
-        for(unsigned int i = 0; i < dofs_per_cell; ++i)
+        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
           for(unsigned int j = 0; j < dofs_per_cell; ++j)
             system_matrix.add(local_dof_indices[i],
                               local_dof_indices[j],
                               local_matrix(i, j));
 
-        for(unsigned int i = 0; i < dofs_per_cell; ++i)
+
           system_rhs(local_dof_indices[i]) += local_rhs(i);
+        }
       }
+    }
+    system_matrix.compress(VectorOperation::add);
+    system_rhs.compress(VectorOperation::add);
   }
 
 
@@ -697,6 +997,8 @@ namespace Step21 {
   // therefore have this separate function to this end.
   template<int dim>
   void TwoPhaseFlowProblem<dim>::assemble_rhs_S() {
+    TimerOutput::Scope t(time_table, "Assemble rhs saturation");
+
     QGauss<dim>       quadrature_formula(degree + 2);
     QGauss<dim - 1>   face_quadrature_formula(degree + 2);
     FEValues<dim>     fe_values(fe, quadrature_formula,
@@ -728,6 +1030,7 @@ namespace Step21 {
     const FEValuesExtractors::Scalar saturation(dim + 1);
 
     for(const auto &cell : dof_handler.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
         local_rhs = 0;
         fe_values.reinit(cell);
 
@@ -738,7 +1041,7 @@ namespace Step21 {
         // introduction, $(S^n,\sigma)-(F(S^n) \mathbf{v}^{n+1},\nabla
         // \sigma)$, where $\sigma$ is the saturation component of the test
         // function:
-        for(unsigned int q = 0; q < n_q_points; ++q)
+        for(unsigned int q = 0; q < n_q_points; ++q) {
           for(unsigned int i = 0; i < dofs_per_cell; ++i) {
               const double   old_s = old_solution_values[q](dim + 1);
               Tensor<1, dim> present_u;
@@ -753,6 +1056,7 @@ namespace Step21 {
                                old_s * phi_i_s) *
                                fe_values.JxW(q);
            }
+        }
 
         // Secondly, we have to deal with the flux parts on the face
         // boundaries. This was a bit more involved because we first have to
@@ -811,7 +1115,9 @@ namespace Step21 {
         cell->get_dof_indices(local_dof_indices);
         for(unsigned int i = 0; i < dofs_per_cell; ++i)
           system_rhs(local_dof_indices[i]) += local_rhs(i);
-     }
+      }
+    }
+    system_rhs.compress(VectorOperation::add);
   }
 
 
@@ -823,11 +1129,13 @@ namespace Step21 {
   // to deal with the saturation equation (see below):
   template<int dim>
   void TwoPhaseFlowProblem<dim>::solve() {
-    const InverseMatrix<SparseMatrix<double>> m_inverse(system_matrix.block(0, 0));
-    Vector<double> tmp(solution.block(0).size());
-    Vector<double> schur_rhs(solution.block(1).size());
-    Vector<double> tmp2(solution.block(2).size());
+    TimerOutput::Scope t(time_table, "Solve");
 
+    const InverseMatrix<LA::MPI::SparseMatrix> m_inverse(system_matrix.block(0, 0));
+    LA::MPI::Vector tmp(locally_owned_dofs_partition[0], communicator);
+    LA::MPI::Vector schur_rhs(locally_owned_dofs_partition[1], communicator);
+
+    effective_solution = solution;
 
     // First the pressure, using the pressure Schur complement of the first
     // two equations:
@@ -837,32 +1145,32 @@ namespace Step21 {
       schur_rhs -= system_rhs.block(1);
 
 
-      SchurComplement schur_complement(system_matrix, m_inverse);
+      SchurComplement schur_complement(system_matrix, m_inverse,
+                                       locally_owned_dofs_partition[0], communicator);
 
-      ApproximateSchurComplement approximate_schur_complement(system_matrix);
+      ApproximateSchurComplement approximate_schur_complement(system_matrix,
+                                                              locally_owned_dofs_partition[0], communicator);
 
       InverseMatrix<ApproximateSchurComplement> preconditioner(approximate_schur_complement);
 
-
-      SolverControl solver_control(solution.block(1).size(),
+      SolverControl solver_control(effective_solution.block(1).size(),
                                    1e-12 * schur_rhs.l2_norm());
-      SolverCG<>    cg(solver_control);
+      SolverCG<LA::MPI::Vector>  cg(solver_control);
+      cg.solve(schur_complement, effective_solution.block(1), schur_rhs, preconditioner);
 
-      cg.solve(schur_complement, solution.block(1), schur_rhs, preconditioner);
-
-      std::cout << "   " << solver_control.last_step()
-                << " CG Schur complement iterations for pressure." << std::endl;
+      pcout << "   " << solver_control.last_step()
+            << " CG Schur complement iterations for pressure." << std::endl;
     }
 
     // Now the velocity:
     {
-      system_matrix.block(0, 1).vmult(tmp, solution.block(1));
+      system_matrix.block(0, 1).vmult(tmp, effective_solution.block(1));
       tmp *= -1;
       tmp += system_rhs.block(0);
 
-      m_inverse.vmult(solution.block(0), tmp);
+      m_inverse.vmult(effective_solution.block(0), tmp);
     }
-
+    solution = effective_solution;
     // Finally, we have to take care of the saturation equation. The first
     // business we have here is to determine the time step using the formula
     // in the introduction. Knowing the shape of our domain and that we
@@ -884,19 +1192,25 @@ namespace Step21 {
     {
       SolverControl solver_control(system_matrix.block(2, 2).m(),
                                    1e-8 * system_rhs.block(2).l2_norm());
-      SolverCG<>    cg(solver_control);
+      LA::SolverCG  cg(solver_control, LA::SolverCG::AdditionalData());
+      LA::MPI::PreconditionAMG  amg;
+      amg.initialize(system_matrix.block(2,2));
       cg.solve(system_matrix.block(2, 2),
-               solution.block(2),
+               effective_solution.block(2),
                system_rhs.block(2),
-               PreconditionIdentity());
+               amg);
 
       project_back_saturation();
 
-      std::cout << "   " << solver_control.last_step()
-                << " CG iterations for saturation." << std::endl;
+      pcout << "   " << solver_control.last_step()
+            << " CG iterations for saturation." << std::endl;
     }
+    solution = effective_solution;
 
     old_solution = solution;
+
+    locally_relevant_solution = solution;
+
   }
 
 
@@ -933,13 +1247,13 @@ namespace Step21 {
     DataOut<dim> data_out;
 
     data_out.attach_dof_handler(dof_handler);
-    data_out.add_data_vector(solution, solution_names);
+    data_out.add_data_vector(locally_relevant_solution, solution_names);
 
     data_out.build_patches(degree + 1);
 
-    std::ofstream output("solution-" +
-                         Utilities::int_to_string(timestep_number, 4) + ".vtk");
-    data_out.write_vtk(output);
+    std::string output_name = "solution-" + Utilities::int_to_string(Utilities::MPI::n_mpi_processes(communicator)) + "proc-" +
+                              Utilities::int_to_string(timestep_number, 4) + ".vtu"  ;
+    data_out.write_vtu_in_parallel(output_name, communicator);
   }
 
 
@@ -963,11 +1277,12 @@ namespace Step21 {
   // have become unphysical a few time steps earlier.
   template<int dim>
   void TwoPhaseFlowProblem<dim>::project_back_saturation() {
-    for(unsigned int i = 0; i < solution.block(2).size(); ++i)
-      if(solution.block(2)(i) < 0)
-        solution.block(2)(i) = 0;
-      else if(solution.block(2)(i) > 1)
-        solution.block(2)(i) = 1;
+    for(unsigned int i = effective_solution.block(2).local_range().first;
+                     i < effective_solution.block(2).local_range().second; ++i)
+      if(effective_solution.block(2)(i) < 0)
+        effective_solution.block(2)(i) = 0;
+      else if(effective_solution.block(2)(i) > 1)
+        effective_solution.block(2)(i) = 1;
   }
 
 
@@ -984,9 +1299,10 @@ namespace Step21 {
     FEValues<dim> fe_values(fe, quadrature_formula, update_values);
     std::vector<Vector<double>> solution_values(n_q_points,
                                                 Vector<double>(dim + 2));
-    double                      max_velocity = 0;
+    double                      max_local_velocity = 0;
 
     for(const auto &cell : dof_handler.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
         fe_values.reinit(cell);
         fe_values.get_function_values(solution, solution_values);
 
@@ -995,11 +1311,12 @@ namespace Step21 {
             for(unsigned int i = 0; i < dim; ++i)
               velocity[i] = solution_values[q](i);
 
-            max_velocity = std::max(max_velocity, velocity.norm());
+            max_local_velocity = std::max(max_local_velocity, velocity.norm());
         }
+      }
     }
 
-    return max_velocity;
+    return Utilities::MPI::max(max_local_velocity, MPI_COMM_WORLD);
   }
 
 
@@ -1030,36 +1347,34 @@ namespace Step21 {
   // results, set the final time at the end of the do loop to 250.
   template<int dim>
   void TwoPhaseFlowProblem<dim>::run() {
-    make_grid_and_dofs();
+    make_grid();
 
-    {
-      AffineConstraints<double> constraints;
-      constraints.close();
+    setup_dofs();
 
-      VectorTools::project(dof_handler,
-                           constraints,
-                           QGauss<dim>(degree + 2),
-                           InitialValues<dim>(),
-                           old_solution);
-    }
+    setup_dofs_initial_condition();
+
+    assemble_initial_condition();
+
+    solve_initial_condition();
 
     double time = 0;
 
     do {
-      std::cout << "Timestep " << timestep_number << std::endl;
+      pcout << "Timestep " << timestep_number << std::endl;
 
       assemble_system();
 
       solve();
 
+      TimerOutput::Scope t(time_table, "Output results");
       output_results();
 
       time += time_step;
       ++timestep_number;
-      std::cout << "   Now at t=" << time << ", dt=" << time_step << '.'
-                << std::endl
-                << std::endl;
-    } while (time <= 1.);
+      pcout << "   Now at t=" << time << ", dt=" << time_step << '.'
+            << std::endl
+            << std::endl;
+    } while (time <= end_time);
   }
 } // namespace Step21
 
@@ -1070,12 +1385,21 @@ namespace Step21 {
 // space to the constructor of the TwoPhaseFlowProblem object.  Here, we use
 // zero-th degree elements, i.e. $RT_0\times DQ_0 \times DQ_0$. The rest is as
 // in all the other programs.
-int main() {
+int main(int argc, char** argv) {
   try {
       using namespace dealii;
       using namespace Step21;
 
-      TwoPhaseFlowProblem<2> two_phase_flow_problem(0);
+      Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, numbers::invalid_unsigned_int);
+
+      std::string parameter_filename;
+      if(argc >= 2)
+        parameter_filename = argv[1];
+      else
+        parameter_filename = "step-21.cfg";
+
+      const int dim = 2;
+      TwoPhaseFlowProblem<dim> two_phase_flow_problem(parameter_filename);
       two_phase_flow_problem.run();
   }
   catch(std::exception &exc) {
