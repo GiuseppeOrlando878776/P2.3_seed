@@ -54,7 +54,7 @@ CMAKE_BINARY_DIR = /home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel
 include CMakeFiles/run.dir/progress.make
 
 CMakeFiles/run: step-21
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --blue --bold --progress-dir=/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Run step-21 with Debug configuration"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --blue --bold --progress-dir=/home/giuseppe/bin/P2.3_seed/exercises/step-21-parallel/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Run step-21 with Release configuration"
 	./step-21
 
 run: CMakeFiles/run

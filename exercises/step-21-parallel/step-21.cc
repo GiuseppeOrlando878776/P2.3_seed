@@ -84,6 +84,11 @@
 
 #include <deal.II/lac/generic_linear_algebra.h>
 
+// Includes for multithread computations
+#include <deal.II/base/work_stream.h>
+#include <deal.II/meshworker/scratch_data.h>
+#include <deal.II/meshworker/copy_data.h>
+
 // The last step is as in all previous programs:
 namespace Step21 {
   using namespace dealii;
@@ -120,18 +125,36 @@ namespace Step21 {
     struct Parameters;    /*! \brief Forward declaration of the class to handle some parameters */
     TwoPhaseFlowProblem(const std::string& parameter_filename);
     void run();
+    using CellFilter = FilteredIterator<typename DoFHandler<dim>::active_cell_iterator>;
 
   protected:
     std::shared_ptr<Parameters> parameters; /*! \brief Variable of the class to handle parameters */
 
   private:
     void   make_grid();
+
     void   setup_dofs();
     void   setup_dofs_initial_condition();  /*! \brief Auxiliary function to set dofs for projection of initial condition */
-    void   assemble_initial_condition();    /*! \brief Auxiliary function to assemble the projection system for initial data */
-    void   solve_initial_condition();       /*! \brief Auxiliary function to solve the projection system for initial data */
+
+    void   assemble_initial_condition_one_cell(const typename DoFHandler<dim>::active_cell_iterator& cell,
+                                               MeshWorker::ScratchData<dim>& scratch,
+                                               MeshWorker::CopyData<>& data);    /*! \brief Auxiliary function to assemble the projection system on one cell */
+    void   copy_local_to_global_initial_condition(const MeshWorker::CopyData<>& data); /*! \brief Copy globally system for initial condition projection */
+    void   assemble_initial_condition();  /*! \brief Auxiliary function to assemble the projection system for initial condition */
+
+    void   solve_initial_condition();    /*! \brief Auxiliary function to solve the projection system for initial data */
+
+    void   assemble_system_one_cell(const typename DoFHandler<dim>::active_cell_iterator& cell,
+                                    MeshWorker::ScratchData<dim>& scratch,
+                                    MeshWorker::CopyData<>& data); /*! \brief Assemble system matrix and rhs of pressure and velocity on single cell */
+    void   copy_local_to_global_system(const MeshWorker::CopyData<>& data); /*! \brief Copy globally system matrix and rhs of pressure and velocity on single cell */
     void   assemble_system();
+    void   assemble_rhs_S_one_cell(const typename DoFHandler<dim>::active_cell_iterator& cell,
+                                    MeshWorker::ScratchData<dim>& scratch,
+                                    MeshWorker::CopyData<>& data);  /*! \brief Assemble saturation rhs on single cell */
+    void   copy_local_to_global_rhs_S(const MeshWorker::CopyData<>& data); /*! \brief Copy globally saturation rhs on single cell */
     void   assemble_rhs_S();
+
     double get_maximal_velocity() const;
     void   solve();
     void   project_back_saturation();
@@ -144,7 +167,7 @@ namespace Step21 {
     parallel::distributed::Triangulation<dim> triangulation;
     FESystem<dim>                             fe;
     DoFHandler<dim>                           dof_handler;
-    DoFHandler<dim>                           tmp_dof_handler;  /*! \brief Auxiliary DofHandler initial condition projection */
+    DoFHandler<dim>                           tmp_dof_handler;  /*! \brief Auxiliary DofHandler for initial condition projection */
 
     LA::MPI::SparseMatrix initial_matrix; /*! \brief Auxiliary matrix for initial condition projection */
     LA::MPI::Vector initial_rhs;          /*! \brief Auxiliary vector for initial condition projection */
@@ -408,7 +431,6 @@ namespace Step21 {
     };
 
 
-
     template<int dim>
     std::vector<Point<dim>> KInverse<dim>::centers = KInverse<dim>::get_centers();
   } // namespace RandomMedium
@@ -448,7 +470,9 @@ namespace Step21 {
   template<class MatrixType, class PrecondType = PreconditionIdentity>
   class InverseMatrix : public Subscriptor {
   public:
-    //Assert(std::is_default_constructable<PrecondType>(), ExcMessage("Preconditioner type not default constructable"));
+    static_assert(std::is_default_constructible<PrecondType>::value,
+                  "Preconditioner type not default constructable");
+
     InverseMatrix(const MatrixType& m, const PrecondType& p = PrecondType()) : matrix(&m), preconditioner(p) {}
 
     void vmult(LA::MPI::Vector& dst, const LA::MPI::Vector& src) const {
@@ -470,8 +494,8 @@ namespace Step21 {
 
   class SchurComplement : public Subscriptor {
   public:
-    SchurComplement(const LA::MPI::BlockSparseMatrix&          A,
-                    const InverseMatrix<LA::MPI::SparseMatrix> &Minv,
+    SchurComplement(const LA::MPI::BlockSparseMatrix&           A,
+                    const InverseMatrix<LA::MPI::SparseMatrix>& Minv,
                     const IndexSet& local_owned_vel,
                     const MPI_Comm& mpi_comm) :
       system_matrix(&A),
@@ -497,7 +521,7 @@ namespace Step21 {
 
   class ApproximateSchurComplement : public Subscriptor {
   public:
-    ApproximateSchurComplement(const LA::MPI::BlockSparseMatrix &A,
+    ApproximateSchurComplement(const LA::MPI::BlockSparseMatrix& A,
                                const IndexSet& local_owned_vel,
                                const MPI_Comm& mpi_comm) :
       system_matrix(&A),
@@ -505,7 +529,7 @@ namespace Step21 {
       tmp2(tmp1)
       {}
 
-    void vmult(LA::MPI::Vector &dst, const LA::MPI::Vector &src) const {
+    void vmult(LA::MPI::Vector& dst, const LA::MPI::Vector& src) const {
       system_matrix->block(0, 1).vmult(tmp1, src);
       auto tmp_Jacobi_precond = LA::MPI::PreconditionJacobi();
       tmp_Jacobi_precond.initialize(system_matrix->block(0,0));
@@ -571,7 +595,6 @@ namespace Step21 {
     prm.declare_entry("Number global refinements", "5", Patterns::Integer(0), "Number of global refinements");
     prm.declare_entry("Viscosity", "0.2", Patterns::Double(0.0), "Viscosity");
     prm.declare_entry("Name file time", "Time_analysis", Patterns::Anything(), "name of the file for time table");
-    prm.declare_entry("Name file error", "Error_analysis", Patterns::Anything(), "name of the file for time table");
   }
 
 
@@ -664,11 +687,17 @@ namespace Step21 {
           << std::endl;
 
     locally_owned_dofs = dof_handler.locally_owned_dofs();
+    // Clear for safety
+    locally_owned_dofs_partition.clear();
+
     locally_owned_dofs_partition.push_back(locally_owned_dofs.get_view(0,n_u));
     locally_owned_dofs_partition.push_back(locally_owned_dofs.get_view(n_u,n_u + n_p));
     locally_owned_dofs_partition.push_back(locally_owned_dofs.get_view(n_u + n_p, n_u + n_p + n_s));
 
     DoFTools::extract_locally_relevant_dofs(dof_handler, locally_relevant_dofs);
+    // Clear for safety
+    locally_relevant_dofs_partition.clear();
+
     locally_relevant_dofs_partition.push_back(locally_relevant_dofs.get_view(0,n_u));
     locally_relevant_dofs_partition.push_back(locally_relevant_dofs.get_view(n_u,n_u + n_p));
     locally_relevant_dofs_partition.push_back(locally_relevant_dofs.get_view(n_u + n_p, n_u + n_p + n_s));
@@ -735,88 +764,105 @@ namespace Step21 {
     // the initial condition
     initial_matrix.reinit(initially_owned_dofs, tmp_dsp, communicator);
     initial_rhs.reinit(initially_owned_dofs, communicator);
-    initial_matrix = 0;
-    initial_rhs = 0;
   }
+
+  // @sect4{TwoPhaseFlowProblem::assemble_initial_condition_one_cell}
+
+  // This is the function that assembles the linear system to project the initial
+  // condition in parallel for one cell. We have to deal with data only for saturation
+  // to solve (\phi_i_s,phi_i_j)F_j = (\phi_i_s,f), where f is the initial codition.
+
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::assemble_initial_condition_one_cell(const typename DoFHandler<dim>::active_cell_iterator& cell,
+                                                                     MeshWorker::ScratchData<dim>& scratch,
+                                                                     MeshWorker::CopyData<>& data) {
+    // Build the linear system to be solved
+    auto& fe_values = scratch.reinit(cell);
+
+    const unsigned int dofs_per_cell = fe.get_sub_fe(dim + 1, 1).dofs_per_cell;
+
+    const unsigned int n_q_points    = fe_values.n_quadrature_points;
+
+    const InitialValues<dim> initial_condition;
+
+    std::vector<double> rhs_values;
+    rhs_values.reserve(n_q_points);
+
+    data.matrices[0] = 0;
+    data.vectors[0]  = 0;
+
+    // Then we have to get the values of the initial condition:
+    for(const auto& actual_q_point: fe_values.get_quadrature_points())
+      rhs_values.emplace_back(initial_condition.value(actual_q_point, dim + 1));
+
+    // With all this, we can now loop over all the quadrature points and
+    // shape functions on this cell and assemble those parts of the matrix
+    // and right hand side that we deal with in this function.
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+          for(unsigned int j = 0; j < dofs_per_cell; ++j) {
+            data.matrices[0](i, j) +=  (fe_values.shape_value(i, q) *
+                                        fe_values.shape_value(j, q)) *
+                                        fe_values.JxW(q);
+          }
+          data.vectors[0](i) += (fe_values.shape_value(i, q) * rhs_values[q]) * fe_values.JxW(q);
+      }
+    }
+
+    // The final step in the loop over all cells is to transfer local
+    // contributions into the global matrix and right hand side vector:
+    // therefore we save dof__indices
+    cell->get_dof_indices(data.local_dof_indices[0]);
+  }
+
+
+  // @sect4{TwoPhaseFlowProblem::copy_local_to_global_initial_condition}
+
+  // This is the function that copies globally the matrix related to the initially
+  // condition.
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::copy_local_to_global_initial_condition(const MeshWorker::CopyData<>& data) {
+    const unsigned int dofs_per_cell = fe.get_sub_fe(dim + 1,1).dofs_per_cell;
+
+    for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+      for(unsigned int j = 0; j < dofs_per_cell; ++j)
+        initial_matrix.add(data.local_dof_indices[0][i],
+                           data.local_dof_indices[0][j],
+                           data.matrices[0](i, j));
+      initial_rhs(data.local_dof_indices[0][i]) += data.vectors[0](i);
+    }
+  }
+
 
   // @sect4{TwoPhaseFlowProblem::assemble_initial_condition}
 
   // This is the function that assembles the linear system to project the initial
-  // condition in parallel. We have to deal with data only for saturation to solve
-  // (\phi_i_s,phi_i_j)F_j = (\phi_i_s,f), where f is the initial codition.
-
+  // condition in multithread parallel.
   template<int dim>
   void TwoPhaseFlowProblem<dim>::assemble_initial_condition() {
     TimerOutput::Scope t(time_table, "Assemble initial_condition");
 
-    // Extract the corresponding finite element space
-    const auto& tmp_fe = fe.get_sub_fe(dim + 1, 1);
+    initial_matrix = 0;
+    initial_rhs = 0;
 
-    // Build the linear system to be solved
-    QGauss<dim>     quadrature_formula(degree + 2);
+    WorkStream::run(CellFilter(IteratorFilters::LocallyOwnedCell(), tmp_dof_handler.begin_active()),
+                    CellFilter(IteratorFilters::LocallyOwnedCell(), tmp_dof_handler.end()),
+                    std::bind(&TwoPhaseFlowProblem<dim>::assemble_initial_condition_one_cell,
+                              this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
+                    std::bind(&TwoPhaseFlowProblem<dim>::copy_local_to_global_initial_condition,
+                              this, std::placeholders::_1),
+                    MeshWorker::ScratchData<dim>(fe.get_sub_fe(dim + 1,1),
+                                                 QGauss<dim>(degree + 2),
+                                                 update_values | update_quadrature_points | update_JxW_values
+                                                 ),
+                    MeshWorker::CopyData(fe.get_sub_fe(dim + 1,1).dofs_per_cell));
 
-    FEValues<dim>   fe_values(tmp_fe, quadrature_formula,
-                              update_values | update_quadrature_points | update_JxW_values);
-
-    const unsigned int dofs_per_cell = tmp_fe.dofs_per_cell;
-
-    const unsigned int n_q_points    = quadrature_formula.size();
-
-    FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
-    Vector<double>     local_rhs(dofs_per_cell);
-
-    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
-
-    const InitialValues<dim> initial_condition;
-
-    std::vector<double>      rhs_values;
-    rhs_values.reserve(n_q_points);
-
-    for(const auto &cell : tmp_dof_handler.active_cell_iterators()) {
-      if(cell->is_locally_owned()) {
-        fe_values.reinit(cell);
-        local_matrix = 0;
-        local_rhs    = 0;
-        rhs_values.clear();
-
-        // Then we have to get the values of the initial condition:
-        for(const auto& actual_q_point: fe_values.get_quadrature_points())
-          rhs_values.emplace_back(initial_condition.value(actual_q_point, dim + 1));
-
-        // With all this, we can now loop over all the quadrature points and
-        // shape functions on this cell and assemble those parts of the matrix
-        // and right hand side that we deal with in this function.
-        for(unsigned int q = 0; q < n_q_points; ++q) {
-          for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-              for(unsigned int j = 0; j < dofs_per_cell; ++j) {
-                local_matrix(i, j) +=  (fe_values.shape_value(i, q) *
-                                        fe_values.shape_value(j, q)) *
-                                        fe_values.JxW(q);
-              }
-              local_rhs(i) += (fe_values.shape_value(i, q) * rhs_values[q]) * fe_values.JxW(q);
-          }
-        }
-
-        // The final step in the loop over all cells is to transfer local
-        // contributions into the global matrix and right hand side vector:
-        cell->get_dof_indices(local_dof_indices);
-        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-          for(unsigned int j = 0; j < dofs_per_cell; ++j)
-            initial_matrix.add(local_dof_indices[i],
-                               local_dof_indices[j],
-                               local_matrix(i, j));
-
-
-          initial_rhs(local_dof_indices[i]) += local_rhs(i);
-        }
-      }
-    }
     initial_matrix.compress(VectorOperation::add);
     initial_rhs.compress(VectorOperation::add);
-
   }
 
-  // @sect4{TwoPhaseFlowProblem::assemble_initial_condition}
+
+  // @sect4{TwoPhaseFlowProblem::solve_initial_condition}
 
   // This is the function that solves the linear system to project the initial
   // condition in parallel.
@@ -834,9 +880,9 @@ namespace Step21 {
   }
 
 
-  // @sect4{TwoPhaseFlowProblem::assemble_system}
+  // @sect4{TwoPhaseFlowProblem::assemble_system_one_cell}
 
-  // This is the function that assembles the linear system, or at least
+  // This is the function that assembles the linear system on one cell, or at least
   // everything except the (1,3) block that depends on the still-unknown
   // velocity computed during this time step (we deal with this in
   // <code>assemble_rhs_S</code>). Much of it is again as in step-20, but we
@@ -851,38 +897,21 @@ namespace Step21 {
   // curved crack permeability function is as simple as just changing the
   // namespace name.
   template<int dim>
-  void TwoPhaseFlowProblem<dim>::assemble_system() {
-    TimerOutput::Scope t(time_table, "Assemble system");
-
-    system_matrix = 0;
-    system_rhs = 0;
-
-    QGauss<dim>     quadrature_formula(degree + 2);
-    QGauss<dim - 1> face_quadrature_formula(degree + 2);
-
-    FEValues<dim>     fe_values(fe, quadrature_formula,
-                                update_values | update_gradients |
-                                update_quadrature_points | update_JxW_values);
-    FEFaceValues<dim> fe_face_values(fe, face_quadrature_formula,
-                                     update_values | update_normal_vectors |
-                                     update_quadrature_points | update_JxW_values);
+  void TwoPhaseFlowProblem<dim>::assemble_system_one_cell(const typename DoFHandler<dim>::active_cell_iterator& cell,
+                                                          MeshWorker::ScratchData<dim>& scratch,
+                                                          MeshWorker::CopyData<>& data) {
 
     const unsigned int dofs_per_cell = fe.dofs_per_cell;
 
-    const unsigned int n_q_points      = quadrature_formula.size();
-    const unsigned int n_face_q_points = face_quadrature_formula.size();
+    auto& fe_values = scratch.reinit(cell);
 
-    FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
-    Vector<double>     local_rhs(dofs_per_cell);
-
-    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+    const unsigned int n_q_points    = fe_values.n_quadrature_points;
 
     const PressureRightHandSide<dim>  pressure_right_hand_side;
     const PressureBoundaryValues<dim> pressure_boundary_values;
     const RandomMedium::KInverse<dim> k_inverse;
 
     std::vector<double>         pressure_rhs_values(n_q_points);
-    std::vector<double>         boundary_values(n_face_q_points);
     std::vector<Tensor<2, dim>> k_inverse_values(n_q_points);
 
     std::vector<Vector<double>>              old_solution_values(n_q_points, Vector<double>(dim + 2));
@@ -892,234 +921,284 @@ namespace Step21 {
     const FEValuesExtractors::Scalar pressure(dim);
     const FEValuesExtractors::Scalar saturation(dim + 1);
 
-    for(const auto &cell : dof_handler.active_cell_iterators()) {
-      if(cell->is_locally_owned()) {
-        fe_values.reinit(cell);
-        local_matrix = 0;
-        local_rhs    = 0;
+    data.matrices[0] = 0;
+    data.vectors[0]  = 0;
 
-        // Here's the first significant difference: We have to get the values
-        // of the saturation function of the previous time step at the
-        // quadrature points. To this end, we can use the
-        // FEValues::get_function_values (previously already used in step-9,
-        // step-14 and step-15), a function that takes a solution vector and
-        // returns a list of function values at the quadrature points of the
-        // present cell. In fact, it returns the complete vector-valued
-        // solution at each quadrature point, i.e. not only the saturation but
-        // also the velocities and pressure:
-        fe_values.get_function_values(old_solution, old_solution_values);
+    // Here's the first significant difference: We have to get the values
+    // of the saturation function of the previous time step at the
+    // quadrature points. To this end, we can use the
+    // FEValues::get_function_values (previously already used in step-9,
+    // step-14 and step-15), a function that takes a solution vector and
+    // returns a list of function values at the quadrature points of the
+    // present cell. In fact, it returns the complete vector-valued
+    // solution at each quadrature point, i.e. not only the saturation but
+    // also the velocities and pressure:
+    fe_values.get_function_values(old_solution, old_solution_values);
 
-        // Then we also have to get the values of the pressure right hand side
-        // and of the inverse permeability tensor at the quadrature points:
-        pressure_right_hand_side.value_list(fe_values.get_quadrature_points(),
-                                            pressure_rhs_values);
-        k_inverse.value_list(fe_values.get_quadrature_points(),
-                             k_inverse_values);
+    // Then we also have to get the values of the pressure right hand side
+    // and of the inverse permeability tensor at the quadrature points:
+    pressure_right_hand_side.value_list(fe_values.get_quadrature_points(),
+                                        pressure_rhs_values);
+    k_inverse.value_list(fe_values.get_quadrature_points(),
+                         k_inverse_values);
 
-        // With all this, we can now loop over all the quadrature points and
-        // shape functions on this cell and assemble those parts of the matrix
-        // and right hand side that we deal with in this function. The
-        // individual terms in the contributions should be self-explanatory
-        // given the explicit form of the bilinear form stated in the
-        // introduction:
-        for(unsigned int q = 0; q < n_q_points; ++q) {
-          for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-              const double old_s = old_solution_values[q](dim + 1);
+    // With all this, we can now loop over all the quadrature points and
+    // shape functions on this cell and assemble those parts of the matrix
+    // and right hand side that we deal with in this function. The
+    // individual terms in the contributions should be self-explanatory
+    // given the explicit form of the bilinear form stated in the
+    // introduction:
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+          const double old_s = old_solution_values[q](dim + 1);
 
-              const Tensor<1, dim> phi_i_u = fe_values[velocities].value(i, q);
-              const double div_phi_i_u     = fe_values[velocities].divergence(i, q);
-              const double phi_i_p         = fe_values[pressure].value(i, q);
-              const double phi_i_s         = fe_values[saturation].value(i, q);
+          const Tensor<1, dim> phi_i_u = fe_values[velocities].value(i, q);
+          const double div_phi_i_u     = fe_values[velocities].divergence(i, q);
+          const double phi_i_p         = fe_values[pressure].value(i, q);
+          const double phi_i_s         = fe_values[saturation].value(i, q);
 
-              for(unsigned int j = 0; j < dofs_per_cell; ++j) {
-                  const Tensor<1, dim> phi_j_u = fe_values[velocities].value(j, q);
-                  const double div_phi_j_u     = fe_values[velocities].divergence(j, q);
-                  const double phi_j_p         = fe_values[pressure].value(j, q);
-                  const double phi_j_s         = fe_values[saturation].value(j, q);
+          for(unsigned int j = 0; j < dofs_per_cell; ++j) {
+              const Tensor<1, dim> phi_j_u = fe_values[velocities].value(j, q);
+              const double div_phi_j_u     = fe_values[velocities].divergence(j, q);
+              const double phi_j_p         = fe_values[pressure].value(j, q);
+              const double phi_j_s         = fe_values[saturation].value(j, q);
 
-                  local_matrix(i, j) += (phi_i_u * k_inverse_values[q] *
+              data.matrices[0](i, j) += (phi_i_u * k_inverse_values[q] *
                                          mobility_inverse(old_s, viscosity) * phi_j_u -
                                          div_phi_i_u * phi_j_p - phi_i_p * div_phi_j_u +
                                          phi_i_s * phi_j_s) *
                                          fe_values.JxW(q);
-              }
-
-              local_rhs(i) += (-phi_i_p * pressure_rhs_values[q]) * fe_values.JxW(q);
           }
-        }
 
-        // Next, we also have to deal with the pressure boundary values. This,
-        // again is as in step-20:
-        for(unsigned int face_no = 0; face_no < GeometryInfo<dim>::faces_per_cell; ++face_no) {
-          if(cell->at_boundary(face_no)) {
-              fe_face_values.reinit(cell, face_no);
+          data.vectors[0](i) += (-phi_i_p * pressure_rhs_values[q]) * fe_values.JxW(q);
+      }
+    }
 
-              pressure_boundary_values.value_list(fe_face_values.get_quadrature_points(), boundary_values);
+    // Next, we also have to deal with the pressure boundary values. This,
+    // again is as in step-20:
+    for(unsigned int face_no = 0; face_no < GeometryInfo<dim>::faces_per_cell; ++face_no) {
+      if(cell->at_boundary(face_no)) {
+        auto& fe_face_values = scratch.reinit(cell, face_no);
+        const unsigned int n_face_q_points = fe_face_values.n_quadrature_points;
 
-              for(unsigned int q = 0; q < n_face_q_points; ++q) {
-                for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-                    const Tensor<1, dim> phi_i_u = fe_face_values[velocities].value(i, q);
-                    local_rhs(i) += -(phi_i_u * fe_face_values.normal_vector(q) *
-                                      boundary_values[q] * fe_face_values.JxW(q));
-                }
-              }
+        std::vector<double>  boundary_values(n_face_q_points);
+        pressure_boundary_values.value_list(fe_face_values.get_quadrature_points(), boundary_values);
+
+        for(unsigned int q = 0; q < n_face_q_points; ++q) {
+          for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+            const Tensor<1, dim> phi_i_u = fe_face_values[velocities].value(i, q);
+            data.vectors[0](i) += -(phi_i_u * fe_face_values.normal_vector(q) *
+                                    boundary_values[q] * fe_face_values.JxW(q));
           }
-        }
-
-        // The final step in the loop over all cells is to transfer local
-        // contributions into the global matrix and right hand side vector:
-        cell->get_dof_indices(local_dof_indices);
-        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-          for(unsigned int j = 0; j < dofs_per_cell; ++j)
-            system_matrix.add(local_dof_indices[i],
-                              local_dof_indices[j],
-                              local_matrix(i, j));
-
-
-          system_rhs(local_dof_indices[i]) += local_rhs(i);
         }
       }
     }
-    system_matrix.compress(VectorOperation::add);
-    system_rhs.compress(VectorOperation::add);
+
+    // The final step in the loop over all cells is to transfer local
+    // contributions into the global matrix and right hand side vector:
+    // therefore we save local_dof_indices
+    cell->get_dof_indices(data.local_dof_indices[0]);
   }
-
-
   // So much for assembly of matrix and right hand side. Note that we do not
   // have to interpolate and apply boundary values since they have all been
   // taken care of in the weak form already.
 
 
-  // @sect4{TwoPhaseFlowProblem::assemble_rhs_S}
+  // @sect4{TwoPhaseFlowProblem::copy_local_to_global_system}
+
+  // This is the function that transfers globally the previous
+  // assembled linear system
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::copy_local_to_global_system(const MeshWorker::CopyData<>& data) {
+    for(unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
+      for(unsigned int j = 0; j < fe.dofs_per_cell; ++j)
+        system_matrix.add(data.local_dof_indices[0][i],
+                          data.local_dof_indices[0][j],
+                          data.matrices[0](i, j));
+      system_rhs(data.local_dof_indices[0][i]) += data.vectors[0](i);
+    }
+  }
+
+
+  // @sect4{TwoPhaseFlowProblem::assemble_system}
+
+  // This is the function that assembles effectively the linear system using
+  // the workstream class
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::assemble_system() {
+    TimerOutput::Scope t(time_table, "Assemble system");
+
+    system_matrix = 0;
+    system_rhs = 0;
+
+    WorkStream::run(CellFilter(IteratorFilters::LocallyOwnedCell(), dof_handler.begin_active()),
+                    CellFilter(IteratorFilters::LocallyOwnedCell(), dof_handler.end()),
+                    std::bind(&TwoPhaseFlowProblem<dim>::assemble_system_one_cell,
+                              this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
+                    std::bind(&TwoPhaseFlowProblem<dim>::copy_local_to_global_system,
+                              this, std::placeholders::_1),
+                    MeshWorker::ScratchData<dim>(fe,
+                                                 QGauss<dim>(degree + 2),
+                                                 update_values | update_gradients |
+                                                 update_quadrature_points | update_JxW_values,
+                                                 QGauss<dim-1>(degree + 2),
+                                                 update_values | update_normal_vectors |
+                                                 update_quadrature_points | update_JxW_values
+                                                 ),
+                    MeshWorker::CopyData(fe.dofs_per_cell));
+
+    system_matrix.compress(VectorOperation::add);
+    system_rhs.compress(VectorOperation::add);
+  }
+
+
+  // @sect4{TwoPhaseFlowProblem::assemble_rhs_S_one_cell}
 
   // As explained in the introduction, we can only evaluate the right hand
   // side of the saturation equation once the velocity has been computed. We
   // therefore have this separate function to this end.
   template<int dim>
-  void TwoPhaseFlowProblem<dim>::assemble_rhs_S() {
-    TimerOutput::Scope t(time_table, "Assemble rhs saturation");
+  void TwoPhaseFlowProblem<dim>::assemble_rhs_S_one_cell(const typename DoFHandler<dim>::active_cell_iterator &cell,
+                                                         MeshWorker::ScratchData<dim>& scratch,
+                                                         MeshWorker::CopyData<>& data) {
+    const unsigned int dofs_per_cell = fe.dofs_per_cell;
 
-    QGauss<dim>       quadrature_formula(degree + 2);
-    QGauss<dim - 1>   face_quadrature_formula(degree + 2);
-    FEValues<dim>     fe_values(fe, quadrature_formula,
-                                update_values | update_gradients |
-                                update_quadrature_points | update_JxW_values);
-    FEFaceValues<dim> fe_face_values(fe, face_quadrature_formula,
-                                     update_values | update_normal_vectors |
-                                     update_quadrature_points | update_JxW_values);
-    FEFaceValues<dim> fe_face_values_neighbor(fe, face_quadrature_formula,
-                                              update_values);
+    auto& fe_values = scratch.reinit(cell);
 
-    const unsigned int dofs_per_cell   = fe.dofs_per_cell;
-    const unsigned int n_q_points      = quadrature_formula.size();
-    const unsigned int n_face_q_points = face_quadrature_formula.size();
-
-    Vector<double> local_rhs(dofs_per_cell);
+    const unsigned int n_q_points = fe_values.n_quadrature_points;
 
     std::vector<Vector<double>> old_solution_values(n_q_points, Vector<double>(dim + 2));
-    std::vector<Vector<double>> old_solution_values_face(n_face_q_points, Vector<double>(dim + 2));
-    std::vector<Vector<double>> old_solution_values_face_neighbor(n_face_q_points, Vector<double>(dim + 2));
     std::vector<Vector<double>> present_solution_values(n_q_points, Vector<double>(dim + 2));
-    std::vector<Vector<double>> present_solution_values_face(n_face_q_points, Vector<double>(dim + 2));
-
-    std::vector<double>                  neighbor_saturation(n_face_q_points);
-    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
     SaturationBoundaryValues<dim> saturation_boundary_values;
 
     const FEValuesExtractors::Scalar saturation(dim + 1);
 
-    for(const auto &cell : dof_handler.active_cell_iterators()) {
-      if(cell->is_locally_owned()) {
-        local_rhs = 0;
-        fe_values.reinit(cell);
+    data.vectors[0] = 0;
 
-        fe_values.get_function_values(old_solution, old_solution_values);
-        fe_values.get_function_values(solution, present_solution_values);
+    fe_values.get_function_values(old_solution, old_solution_values);
+    fe_values.get_function_values(solution, present_solution_values);
 
-        // First for the cell terms. These are, following the formulas in the
-        // introduction, $(S^n,\sigma)-(F(S^n) \mathbf{v}^{n+1},\nabla
-        // \sigma)$, where $\sigma$ is the saturation component of the test
-        // function:
-        for(unsigned int q = 0; q < n_q_points; ++q) {
-          for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-              const double   old_s = old_solution_values[q](dim + 1);
-              Tensor<1, dim> present_u;
-              for(unsigned int d = 0; d < dim; ++d)
-                present_u[d] = present_solution_values[q](d);
+    // First for the cell terms. These are, following the formulas in the
+    // introduction, $(S^n,\sigma)-(F(S^n) \mathbf{v}^{n+1},\nabla
+    // \sigma)$, where $\sigma$ is the saturation component of the test
+    // function:
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+          const double   old_s = old_solution_values[q](dim + 1);
+          Tensor<1, dim> present_u;
+          for(unsigned int d = 0; d < dim; ++d)
+            present_u[d] = present_solution_values[q](d);
 
-              const double         phi_i_s = fe_values[saturation].value(i, q);
-              const Tensor<1, dim> grad_phi_i_s = fe_values[saturation].gradient(i, q);
+          const double         phi_i_s = fe_values[saturation].value(i, q);
+          const Tensor<1, dim> grad_phi_i_s = fe_values[saturation].gradient(i, q);
 
-              local_rhs(i) += (time_step * fractional_flow(old_s, viscosity) *
-                               present_u * grad_phi_i_s +
-                               old_s * phi_i_s) *
-                               fe_values.JxW(q);
-           }
-        }
-
-        // Secondly, we have to deal with the flux parts on the face
-        // boundaries. This was a bit more involved because we first have to
-        // determine which are the influx and outflux parts of the cell
-        // boundary. If we have an influx boundary, we need to evaluate the
-        // saturation on the other side of the face (or the boundary values,
-        // if we are at the boundary of the domain).
-        //
-        // All this is a bit tricky, but has been explained in some detail
-        // already in step-9. Take a look there how this is supposed to work!
-        for(unsigned int face_no = 0; face_no < GeometryInfo<dim>::faces_per_cell; ++face_no) {
-            fe_face_values.reinit(cell, face_no);
-
-            fe_face_values.get_function_values(old_solution,
-                                               old_solution_values_face);
-            fe_face_values.get_function_values(solution,
-                                               present_solution_values_face);
-
-            if(cell->at_boundary(face_no))
-              saturation_boundary_values.value_list(fe_face_values.get_quadrature_points(),
-                                                    neighbor_saturation);
-            else {
-                const auto         neighbor = cell->neighbor(face_no);
-                const unsigned int neighbor_face = cell->neighbor_of_neighbor(face_no);
-
-                fe_face_values_neighbor.reinit(neighbor, neighbor_face);
-
-                fe_face_values_neighbor.get_function_values(old_solution, old_solution_values_face_neighbor);
-
-                for(unsigned int q = 0; q < n_face_q_points; ++q)
-                  neighbor_saturation[q] = old_solution_values_face_neighbor[q](dim + 1);
-            }
-
-
-            for(unsigned int q = 0; q < n_face_q_points; ++q) {
-                Tensor<1, dim> present_u_face;
-                for(unsigned int d = 0; d < dim; ++d)
-                  present_u_face[d] = present_solution_values_face[q](d);
-
-                const double normal_flux = present_u_face*fe_face_values.normal_vector(q);
-
-                const bool is_outflow_q_point = (normal_flux >= 0);
-
-                for(unsigned int i = 0; i < dofs_per_cell; ++i)
-                  local_rhs(i) -=
-                    time_step * normal_flux *
-                    fractional_flow((is_outflow_q_point == true ?
-                                     old_solution_values_face[q](dim + 1) :
-                                     neighbor_saturation[q]),
-                                     viscosity) *
-                                     fe_face_values[saturation].value(i, q) *
-                                     fe_face_values.JxW(q);
-            }
-        }
-
-        cell->get_dof_indices(local_dof_indices);
-        for(unsigned int i = 0; i < dofs_per_cell; ++i)
-          system_rhs(local_dof_indices[i]) += local_rhs(i);
+          data.vectors[0](i) += (time_step * fractional_flow(old_s, viscosity) *
+                                 present_u * grad_phi_i_s +
+                                 old_s * phi_i_s) *
+                                 fe_values.JxW(q);
       }
     }
-    system_rhs.compress(VectorOperation::add);
+
+    // Secondly, we have to deal with the flux parts on the face
+    // boundaries. This was a bit more involved because we first have to
+    // determine which are the influx and outflux parts of the cell
+    // boundary. If we have an influx boundary, we need to evaluate the
+    // saturation on the other side of the face (or the boundary values,
+    // if we are at the boundary of the domain).
+    //
+    // All this is a bit tricky, but has been explained in some detail
+    // already in step-9. Take a look there how this is supposed to work!
+    for(unsigned int face_no = 0; face_no < GeometryInfo<dim>::faces_per_cell; ++face_no) {
+      auto& fe_face_values = scratch.reinit(cell, face_no);
+      unsigned int n_face_q_points = fe_face_values.n_quadrature_points;
+
+      std::vector<Vector<double>> old_solution_values_face(n_face_q_points, Vector<double>(dim + 2));
+      std::vector<Vector<double>> present_solution_values_face(n_face_q_points, Vector<double>(dim + 2));
+
+      std::vector<double>         neighbor_saturation(n_face_q_points);
+
+      fe_face_values.get_function_values(old_solution, old_solution_values_face);
+      fe_face_values.get_function_values(solution, present_solution_values_face);
+
+      if(cell->at_boundary(face_no))
+        saturation_boundary_values.value_list(fe_face_values.get_quadrature_points(),
+                                                    neighbor_saturation);
+      else {
+        const auto         neighbor = cell->neighbor(face_no);
+        const unsigned int neighbor_face = cell->neighbor_of_neighbor(face_no);
+
+        auto& fe_face_values_neighbor = scratch.reinit_neighbor(neighbor, neighbor_face);
+        std::vector<Vector<double>> old_solution_values_face_neighbor(n_face_q_points, Vector<double>(dim + 2));
+        fe_face_values_neighbor.get_function_values(old_solution, old_solution_values_face_neighbor);
+
+        for(unsigned int q = 0; q < n_face_q_points; ++q)
+          neighbor_saturation[q] = old_solution_values_face_neighbor[q](dim + 1);
+      }
+
+
+      for(unsigned int q = 0; q < n_face_q_points; ++q) {
+        Tensor<1, dim> present_u_face;
+        for(unsigned int d = 0; d < dim; ++d)
+          present_u_face[d] = present_solution_values_face[q](d);
+
+        const double normal_flux = present_u_face*fe_face_values.normal_vector(q);
+
+        const bool is_outflow_q_point = (normal_flux >= 0);
+
+        for(unsigned int i = 0; i < dofs_per_cell; ++i)
+          data.vectors[0](i) -= time_step * normal_flux *
+                                fractional_flow((is_outflow_q_point == true ?
+                                                 old_solution_values_face[q](dim + 1) :
+                                                 neighbor_saturation[q]),
+                                                 viscosity) *
+                                fe_face_values[saturation].value(i, q) *
+                                fe_face_values.JxW(q);
+      }
+    } // End of loop over faces
+
+    cell->get_dof_indices(data.local_dof_indices[0]);
   }
 
+
+  // @sect4{TwoPhaseFlowProblem::copy_local_to_global_rhs_S}
+
+  // This is the function that transfers globally the previous
+  // assembled right-hand side
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::copy_local_to_global_rhs_S(const MeshWorker::CopyData<>& data) {
+    for(unsigned int i = 0; i < fe.dofs_per_cell; ++i)
+      system_rhs(data.local_dof_indices[0][i]) += data.vectors[0](i);
+  }
+
+
+  // @sect4{TwoPhaseFlowProblem::assemble_rhs_S}
+
+  // This is the function that assembles effectively the right-hand side of the
+  // saturation equation
+  template<int dim>
+  void TwoPhaseFlowProblem<dim>::assemble_rhs_S() {
+    TimerOutput::Scope t(time_table, "Assemble rhs saturation");
+
+    WorkStream::run(CellFilter(IteratorFilters::LocallyOwnedCell(), dof_handler.begin_active()),
+                    CellFilter(IteratorFilters::LocallyOwnedCell(), dof_handler.end()),
+                    std::bind(&TwoPhaseFlowProblem<dim>::assemble_rhs_S_one_cell,
+                              this, std::placeholders::_1, std::placeholders::_2,
+                                    std::placeholders::_3),
+                    std::bind(&TwoPhaseFlowProblem<dim>::copy_local_to_global_rhs_S,
+                              this, std::placeholders::_1),
+                    MeshWorker::ScratchData<dim>(fe,
+                                                 QGauss<dim>(degree + 2),
+                                                 update_values | update_gradients |
+                                                 update_quadrature_points | update_JxW_values,
+                                                 QGauss<dim-1>(degree + 2),
+                                                 update_values | update_normal_vectors |
+                                                 update_quadrature_points | update_JxW_values
+                                                 ),
+                    MeshWorker::CopyData(fe.dofs_per_cell));
+
+    system_rhs.compress(VectorOperation::add);
+  }
 
 
   // @sect4{TwoPhaseFlowProblem::solve}
@@ -1195,10 +1274,8 @@ namespace Step21 {
       LA::SolverCG  cg(solver_control, LA::SolverCG::AdditionalData());
       LA::MPI::PreconditionAMG  amg;
       amg.initialize(system_matrix.block(2,2));
-      cg.solve(system_matrix.block(2, 2),
-               effective_solution.block(2),
-               system_rhs.block(2),
-               amg);
+      cg.solve(system_matrix.block(2, 2), effective_solution.block(2),
+               system_rhs.block(2), amg);
 
       project_back_saturation();
 

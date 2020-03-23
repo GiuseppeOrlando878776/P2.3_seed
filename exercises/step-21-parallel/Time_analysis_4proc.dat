@@ -1,0 +1,36 @@
+
+
++---------------------------------------------+------------+------------+
+| Total CPU time elapsed since start          |      98.6s |            |
+|                                             |            |            |
+| Section                         | no. calls |  CPU time  | % of total |
++---------------------------------+-----------+------------+------------+
+| Assemble initial_condition      |         1 |  0.000689s |         0% |
+| Assemble rhs saturation         |        42 |      0.46s |      0.47% |
+| Assemble system                 |        42 |     0.251s |      0.25% |
+| Make grid                       |         1 |   0.00508s |         0% |
+| Output results                  |        42 |    0.0482s |         0% |
+| Setup Dofs                      |         1 |    0.0103s |         0% |
+| Setup dofs initial_condition    |         1 |   0.00319s |         0% |
+| Solve                           |        42 |      24.4s |        25% |
+| Solve initial_condition         |         1 |  0.000289s |         0% |
++---------------------------------+-----------+------------+------------+
+
+
+
++---------------------------------------------+------------+------------+
+| Total wallclock time elapsed since start    |      24.4s |            |
+|                                             |            |            |
+| Section                         | no. calls |  wall time | % of total |
++---------------------------------+-----------+------------+------------+
+| Assemble initial_condition      |         1 |  0.000382s |         0% |
+| Assemble rhs saturation         |        42 |     0.262s |       1.1% |
+| Assemble system                 |        42 |     0.148s |      0.61% |
+| Make grid                       |         1 |   0.00368s |         0% |
+| Output results                  |        42 |    0.0468s |      0.19% |
+| Setup Dofs                      |         1 |   0.00903s |         0% |
+| Setup dofs initial_condition    |         1 |    0.0024s |         0% |
+| Solve                           |        42 |      24.2s |        99% |
+| Solve initial_condition         |         1 |  0.000242s |         0% |
++---------------------------------+-----------+------------+------------+
+

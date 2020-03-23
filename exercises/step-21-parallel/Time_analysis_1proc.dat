@@ -1,0 +1,40 @@
+
+
++---------------------------------------------+------------+------------+
+| Total CPU time elapsed since start          |      51.7s |            |
+|                                             |            |            |
+| Section                         | no. calls |  CPU time  | % of total |
++---------------------------------+-----------+------------+------------+
+| Assemble initial_condition      |         1 |   0.00345s |         0% |
+| Assemble rhs saturation         |        42 |         2s |       3.9% |
+| Assemble system                 |        42 |     0.955s |       1.8% |
+| Make grid                       |         1 |    0.0113s |         0% |
+| Output results                  |        42 |     0.329s |      0.64% |
+| Setup Dofs                      |         1 |   0.00724s |         0% |
+| Setup dofs initial_condition    |         1 |   0.00573s |         0% |
+| Solve                           |        42 |      48.3s |        94% |
+| Solve initial_condition         |         1 |     8e-05s |         0% |
++---------------------------------+-----------+------------+------------+
+
+
+Note: The sum of counted times is 1.98 seconds larger than the total time.
+(Timer function may have introduced too much overhead, or different
+section timers may have run at the same time.)
+
+
++---------------------------------------------+------------+------------+
+| Total wallclock time elapsed since start    |      48.6s |            |
+|                                             |            |            |
+| Section                         | no. calls |  wall time | % of total |
++---------------------------------+-----------+------------+------------+
+| Assemble initial_condition      |         1 |   0.00366s |         0% |
+| Assemble rhs saturation         |        42 |      1.03s |       2.1% |
+| Assemble system                 |        42 |     0.523s |       1.1% |
+| Make grid                       |         1 |   0.00879s |         0% |
+| Output results                  |        42 |     0.652s |       1.3% |
+| Setup Dofs                      |         1 |   0.00999s |         0% |
+| Setup dofs initial_condition    |         1 |   0.00509s |         0% |
+| Solve                           |        42 |      47.4s |        97% |
+| Solve initial_condition         |         1 |  0.000117s |         0% |
++---------------------------------+-----------+------------+------------+
+

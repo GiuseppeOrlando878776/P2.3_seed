@@ -4,7 +4,7 @@ MESSAGE(
 #  Project  step-21  set up with  deal.II-9.1.1  found at
 #      /home/giuseppe/Scaricati/dealii-9.1.1/build
 #
-#  CMAKE_BUILD_TYPE:          Debug
+#  CMAKE_BUILD_TYPE:          Release
 #
 #  You can now run
 #       $ make                - to compile and link the program

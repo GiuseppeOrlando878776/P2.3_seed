@@ -79,9 +79,9 @@ step__21_EXTERNAL_OBJECTS =
 
 step-21: CMakeFiles/step-21.dir/step-21.cc.o
 step-21: CMakeFiles/step-21.dir/build.make
-step-21: /home/giuseppe/Scaricati/dealii-9.1.1/build/lib/libdeal_II.g.so.9.1.1
-step-21: /home/giuseppe/bin/p4est/DEBUG/lib/libp4est.so
-step-21: /home/giuseppe/bin/p4est/DEBUG/lib/libsc.so
+step-21: /home/giuseppe/Scaricati/dealii-9.1.1/build/lib/libdeal_II.so.9.1.1
+step-21: /home/giuseppe/bin/p4est/FAST/lib/libp4est.so
+step-21: /home/giuseppe/bin/p4est/FAST/lib/libsc.so
 step-21: /usr/lib/x86_64-linux-gnu/libboost_iostreams.so
 step-21: /usr/lib/x86_64-linux-gnu/libboost_serialization.so
 step-21: /usr/lib/x86_64-linux-gnu/libboost_system.so
