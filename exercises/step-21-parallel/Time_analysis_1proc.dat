@@ -1,40 +1,40 @@
 
 
 +---------------------------------------------+------------+------------+
-| Total CPU time elapsed since start          |        35s |            |
+| Total CPU time elapsed since start          |      36.1s |            |
 |                                             |            |            |
 | Section                         | no. calls |  CPU time  | % of total |
 +---------------------------------+-----------+------------+------------+
-| Assemble initial_condition      |         1 |   0.00198s |         0% |
-| Assemble rhs saturation         |        42 |      1.53s |       4.4% |
-| Assemble system                 |        42 |     0.835s |       2.4% |
-| Make grid                       |         1 |    0.0146s |         0% |
-| Output results                  |        42 |      0.28s |       0.8% |
-| Setup Dofs                      |         1 |    0.0209s |         0% |
-| Setup dofs initial_condition    |         1 |    0.0157s |         0% |
-| Solve                           |        42 |      32.3s |        92% |
-| Solve initial_condition         |         1 |   0.00059s |         0% |
+| Assemble initial_condition      |         1 |   0.00166s |         0% |
+| Assemble rhs saturation         |        42 |      1.49s |       4.1% |
+| Assemble system                 |        42 |     0.737s |         2% |
+| Make grid                       |         1 |   0.00721s |         0% |
+| Output results                  |        42 |     0.227s |      0.63% |
+| Setup Dofs                      |         1 |   0.00933s |         0% |
+| Setup dofs initial_condition    |         1 |   0.00342s |         0% |
+| Solve                           |        42 |      33.6s |        93% |
+| Solve initial_condition         |         1 |   9.3e-05s |         0% |
 +---------------------------------+-----------+------------+------------+
 
 
-Note: The sum of counted times is 1.51 seconds larger than the total time.
+Note: The sum of counted times is 1.47 seconds larger than the total time.
 (Timer function may have introduced too much overhead, or different
 section timers may have run at the same time.)
 
 
 +---------------------------------------------+------------+------------+
-| Total wallclock time elapsed since start    |        34s |            |
+| Total wallclock time elapsed since start    |      33.5s |            |
 |                                             |            |            |
 | Section                         | no. calls |  wall time | % of total |
 +---------------------------------+-----------+------------+------------+
-| Assemble initial_condition      |         1 |    0.0252s |         0% |
-| Assemble rhs saturation         |        42 |     0.795s |       2.3% |
-| Assemble system                 |        42 |     0.484s |       1.4% |
-| Make grid                       |         1 |    0.0273s |         0% |
-| Output results                  |        42 |      1.72s |       5.1% |
-| Setup Dofs                      |         1 |     0.154s |      0.45% |
-| Setup dofs initial_condition    |         1 |    0.0239s |         0% |
-| Solve                           |        42 |      31.5s |        93% |
-| Solve initial_condition         |         1 |    0.0011s |         0% |
+| Assemble initial_condition      |         1 |   0.00278s |         0% |
+| Assemble rhs saturation         |        42 |     0.764s |       2.3% |
+| Assemble system                 |        42 |     0.381s |       1.1% |
+| Make grid                       |         1 |   0.00487s |         0% |
+| Output results                  |        42 |     0.226s |      0.67% |
+| Setup Dofs                      |         1 |   0.00772s |         0% |
+| Setup dofs initial_condition    |         1 |   0.00549s |         0% |
+| Solve                           |        42 |      32.9s |        98% |
+| Solve initial_condition         |         1 |  0.000111s |         0% |
 +---------------------------------+-----------+------------+------------+
 

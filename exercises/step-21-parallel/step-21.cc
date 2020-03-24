@@ -138,21 +138,31 @@ namespace Step21 {
 
     void   assemble_initial_condition_one_cell(const typename DoFHandler<dim>::active_cell_iterator& cell,
                                                MeshWorker::ScratchData<dim>& scratch,
-                                               MeshWorker::CopyData<>& data);    /*! \brief Auxiliary function to assemble the projection system on one cell */
-    void   copy_local_to_global_initial_condition(const MeshWorker::CopyData<>& data); /*! \brief Copy globally system for initial condition projection */
-    void   assemble_initial_condition();  /*! \brief Auxiliary function to assemble the projection system for initial condition */
+                                               MeshWorker::CopyData<>& data);   /*! \brief Auxiliary function to assemble
+                                                                                          the projection system on
+                                                                                          one cell */
+    void   copy_local_to_global_initial_condition(const MeshWorker::CopyData<>& data); /*! \brief Copy globally system for
+                                                                                                  initial condition
+                                                                                                  projection */
+    void   assemble_initial_condition();  /*! \brief Auxiliary function to assemble the projection system
+                                                    for initial condition */
 
     void   solve_initial_condition();    /*! \brief Auxiliary function to solve the projection system for initial data */
 
     void   assemble_system_one_cell(const typename DoFHandler<dim>::active_cell_iterator& cell,
                                     MeshWorker::ScratchData<dim>& scratch,
-                                    MeshWorker::CopyData<>& data); /*! \brief Assemble system matrix and rhs of pressure and velocity on single cell */
-    void   copy_local_to_global_system(const MeshWorker::CopyData<>& data); /*! \brief Copy globally system matrix and rhs of pressure and velocity on single cell */
+                                    MeshWorker::CopyData<>& data); /*! \brief Assemble system matrix and rhs of pressure
+                                                                              and velocity on single cell */
+    void   copy_local_to_global_system(const MeshWorker::CopyData<>& data); /*! \brief Copy globally system matrix and
+                                                                                       rhs of pressure and velocity
+                                                                                       on single cell */
     void   assemble_system();
     void   assemble_rhs_S_one_cell(const typename DoFHandler<dim>::active_cell_iterator& cell,
                                     MeshWorker::ScratchData<dim>& scratch,
-                                    MeshWorker::CopyData<>& data);  /*! \brief Assemble saturation rhs on single cell */
-    void   copy_local_to_global_rhs_S(const MeshWorker::CopyData<>& data); /*! \brief Copy globally saturation rhs on single cell */
+                                    MeshWorker::CopyData<>& data);  /*! \brief Assemble saturation rhs
+                                                                               on single cell */
+    void   copy_local_to_global_rhs_S(const MeshWorker::CopyData<>& data); /*! \brief Copy globally saturation rhs
+                                                                                      on single cell */
     void   assemble_rhs_S();
 
     double get_maximal_velocity() const;
@@ -167,7 +177,8 @@ namespace Step21 {
     parallel::distributed::Triangulation<dim> triangulation;
     FESystem<dim>                             fe;
     DoFHandler<dim>                           dof_handler;
-    DoFHandler<dim>                           tmp_dof_handler;  /*! \brief Auxiliary DofHandler for initial condition projection */
+    DoFHandler<dim>                           tmp_dof_handler;  /*! \brief Auxiliary DofHandler for initial
+                                                                          condition projection */
 
     LA::MPI::SparseMatrix initial_matrix; /*! \brief Auxiliary matrix for initial condition projection */
     LA::MPI::Vector initial_rhs;          /*! \brief Auxiliary vector for initial condition projection */
@@ -205,8 +216,9 @@ namespace Step21 {
     struct Parameters {
       Parameters(const std::string& parameter_filename);  /*! \brief Class constructor with the name of the file */
 
-      static void declare_parameters(ParameterHandler& prm);   /*! \brief Declaration of parameters using ParameterHandler. It is static
-                                                                          because it is associated to the class and not to a particular instance. */
+      static void declare_parameters(ParameterHandler& prm);   /*! \brief Declaration of parameters using ParameterHandler.
+                                                                          It is static because it is associated to the class
+                                                                          and not to a particular instance. */
       void parse_parameters(ParameterHandler& prm);            /*! \brief Pase function with auxilium of ParameterHandler */
 
       unsigned int degree;    /*! \brief Polynomial degree of FE spaces */
@@ -757,7 +769,7 @@ namespace Step21 {
     // subspace
     auto& initially_owned_dofs = tmp_dof_handler.locally_owned_dofs();
     IndexSet initially_relevant_dofs;
-    DoFTools::extract_locally_relevant_dofs(tmp_dof_handler, locally_relevant_dofs);
+    DoFTools::extract_locally_relevant_dofs(tmp_dof_handler, initially_relevant_dofs);
 
     DynamicSparsityPattern tmp_dsp(tmp_dof_handler.n_dofs());
     DoFTools::make_sparsity_pattern(tmp_dof_handler, tmp_dsp);

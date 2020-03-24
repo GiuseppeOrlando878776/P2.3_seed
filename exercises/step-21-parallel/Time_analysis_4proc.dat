@@ -1,36 +1,36 @@
 
 
 +---------------------------------------------+------------+------------+
-| Total CPU time elapsed since start          |      95.6s |            |
+| Total CPU time elapsed since start          |      98.4s |            |
 |                                             |            |            |
 | Section                         | no. calls |  CPU time  | % of total |
 +---------------------------------+-----------+------------+------------+
-| Assemble initial_condition      |         1 |   0.00137s |         0% |
-| Assemble rhs saturation         |        42 |     0.445s |      0.47% |
-| Assemble system                 |        42 |     0.244s |      0.25% |
-| Make grid                       |         1 |   0.00781s |         0% |
-| Output results                  |        42 |    0.0547s |         0% |
-| Setup Dofs                      |         1 |    0.0122s |         0% |
-| Setup dofs initial_condition    |         1 |   0.00499s |         0% |
-| Solve                           |        42 |      23.6s |        25% |
-| Solve initial_condition         |         1 |  0.000255s |         0% |
+| Assemble initial_condition      |         1 |  0.000675s |         0% |
+| Assemble rhs saturation         |        42 |     0.443s |      0.45% |
+| Assemble system                 |        42 |     0.231s |      0.23% |
+| Make grid                       |         1 |   0.00756s |         0% |
+| Output results                  |        42 |     0.426s |      0.43% |
+| Setup Dofs                      |         1 |     0.013s |         0% |
+| Setup dofs initial_condition    |         1 |   0.00334s |         0% |
+| Solve                           |        42 |      24.1s |        24% |
+| Solve initial_condition         |         1 |  0.000273s |         0% |
 +---------------------------------+-----------+------------+------------+
 
 
 
 +---------------------------------------------+------------+------------+
-| Total wallclock time elapsed since start    |      23.6s |            |
+| Total wallclock time elapsed since start    |      24.4s |            |
 |                                             |            |            |
 | Section                         | no. calls |  wall time | % of total |
 +---------------------------------+-----------+------------+------------+
-| Assemble initial_condition      |         1 |  0.000977s |         0% |
-| Assemble rhs saturation         |        42 |      0.25s |       1.1% |
-| Assemble system                 |        42 |     0.148s |      0.63% |
-| Make grid                       |         1 |   0.00662s |         0% |
-| Output results                  |        42 |    0.0497s |      0.21% |
-| Setup Dofs                      |         1 |     0.011s |         0% |
-| Setup dofs initial_condition    |         1 |   0.00416s |         0% |
-| Solve                           |        42 |      23.4s |        99% |
-| Solve initial_condition         |         1 |  0.000254s |         0% |
+| Assemble initial_condition      |         1 |  0.000375s |         0% |
+| Assemble rhs saturation         |        42 |     0.246s |         1% |
+| Assemble system                 |        42 |     0.135s |      0.55% |
+| Make grid                       |         1 |   0.00513s |         0% |
+| Output results                  |        42 |     0.423s |       1.7% |
+| Setup Dofs                      |         1 |    0.0114s |         0% |
+| Setup dofs initial_condition    |         1 |   0.00257s |         0% |
+| Solve                           |        42 |      23.8s |        98% |
+| Solve initial_condition         |         1 |  0.000223s |         0% |
 +---------------------------------+-----------+------------+------------+
 
