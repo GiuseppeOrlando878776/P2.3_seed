@@ -557,7 +557,7 @@ namespace Step21 {
 
   // First the constructor of the Parameters struct
   template<int dim>
-  TwoPhaseFlowProblem<dim>::Parameters::Parameters(const std::string &parameter_filename):
+  TwoPhaseFlowProblem<dim>::Parameters::Parameters(const std::string& parameter_filename):
       degree(0),
       end_time(1.0),
       n_global_refinement(5),
@@ -590,11 +590,11 @@ namespace Step21 {
   // description:
   template <int dim>
   void TwoPhaseFlowProblem<dim>::Parameters::declare_parameters(ParameterHandler &prm) {
-    prm.declare_entry("Degree", "0", Patterns::Integer(0), "Polynomial degree");
+    prm.declare_entry("Degree", "0", Patterns::Integer(0), "Polynomial degree of FE spaces");
     prm.declare_entry("End time", "1.0", Patterns::Double(0.0), "End time of the simulation.");
     prm.declare_entry("Number global refinements", "5", Patterns::Integer(0), "Number of global refinements");
     prm.declare_entry("Viscosity", "0.2", Patterns::Double(0.0), "Viscosity");
-    prm.declare_entry("Name file time", "Time_analysis", Patterns::Anything(), "name of the file for time table");
+    prm.declare_entry("Name file time", "Time_analysis", Patterns::Anything(), "Name of the file for time table");
   }
 
 
@@ -687,6 +687,7 @@ namespace Step21 {
           << std::endl;
 
     locally_owned_dofs = dof_handler.locally_owned_dofs();
+
     // Clear for safety
     locally_owned_dofs_partition.clear();
 
@@ -695,6 +696,7 @@ namespace Step21 {
     locally_owned_dofs_partition.push_back(locally_owned_dofs.get_view(n_u + n_p, n_u + n_p + n_s));
 
     DoFTools::extract_locally_relevant_dofs(dof_handler, locally_relevant_dofs);
+
     // Clear for safety
     locally_relevant_dofs_partition.clear();
 
@@ -754,11 +756,13 @@ namespace Step21 {
     // Build and distribute the sparsity pattern associated to this
     // subspace
     auto& initially_owned_dofs = tmp_dof_handler.locally_owned_dofs();
+    IndexSet initially_relevant_dofs;
+    DoFTools::extract_locally_relevant_dofs(tmp_dof_handler, locally_relevant_dofs);
 
     DynamicSparsityPattern tmp_dsp(tmp_dof_handler.n_dofs());
     DoFTools::make_sparsity_pattern(tmp_dof_handler, tmp_dsp);
     SparsityTools::distribute_sparsity_pattern(tmp_dsp, tmp_dof_handler.n_locally_owned_dofs_per_processor(),
-                                               communicator, initially_owned_dofs);
+                                               communicator, initially_relevant_dofs);
 
     // Initialize matrices and vectors to store system for the projection of
     // the initial condition
@@ -809,7 +813,7 @@ namespace Step21 {
       }
     }
 
-    // The final step in the loop over all cells is to transfer local
+    // The final step is the loop over all cells is to transfer local
     // contributions into the global matrix and right hand side vector:
     // therefore we save dof__indices
     cell->get_dof_indices(data.local_dof_indices[0]);
@@ -866,7 +870,6 @@ namespace Step21 {
 
   // This is the function that solves the linear system to project the initial
   // condition in parallel.
-
   template<int dim>
   void TwoPhaseFlowProblem<dim>::solve_initial_condition() {
     TimerOutput::Scope t(time_table, "Solve initial_condition");
@@ -994,7 +997,7 @@ namespace Step21 {
       }
     }
 
-    // The final step in the loop over all cells is to transfer local
+    // The final step is the loop over all cells is to transfer local
     // contributions into the global matrix and right hand side vector:
     // therefore we save local_dof_indices
     cell->get_dof_indices(data.local_dof_indices[0]);
@@ -1114,6 +1117,8 @@ namespace Step21 {
       unsigned int n_face_q_points = fe_face_values.n_quadrature_points;
 
       std::vector<Vector<double>> old_solution_values_face(n_face_q_points, Vector<double>(dim + 2));
+      // Here we need face values also for current solution; this is way we used effective_solution with
+      // the correct number of owned dofs and solution with the relevant dofs
       std::vector<Vector<double>> present_solution_values_face(n_face_q_points, Vector<double>(dim + 2));
 
       std::vector<double>         neighbor_saturation(n_face_q_points);
@@ -1123,7 +1128,7 @@ namespace Step21 {
 
       if(cell->at_boundary(face_no))
         saturation_boundary_values.value_list(fe_face_values.get_quadrature_points(),
-                                                    neighbor_saturation);
+                                              neighbor_saturation);
       else {
         const auto         neighbor = cell->neighbor(face_no);
         const unsigned int neighbor_face = cell->neighbor_of_neighbor(face_no);
@@ -1155,8 +1160,11 @@ namespace Step21 {
                                 fe_face_values[saturation].value(i, q) *
                                 fe_face_values.JxW(q);
       }
-    } // End of loop over faces
+    } // End of loop over number of faces
 
+    // The final step in the loop over all cells is to transfer local
+    // contributions into the right hand side vector:
+    // therefore we save local_dof_indices
     cell->get_dof_indices(data.local_dof_indices[0]);
   }
 
@@ -1175,7 +1183,7 @@ namespace Step21 {
   // @sect4{TwoPhaseFlowProblem::assemble_rhs_S}
 
   // This is the function that assembles effectively the right-hand side of the
-  // saturation equation
+  // saturation equation usin WorkStream
   template<int dim>
   void TwoPhaseFlowProblem<dim>::assemble_rhs_S() {
     TimerOutput::Scope t(time_table, "Assemble rhs saturation");
@@ -1214,15 +1222,12 @@ namespace Step21 {
     LA::MPI::Vector tmp(locally_owned_dofs_partition[0], communicator);
     LA::MPI::Vector schur_rhs(locally_owned_dofs_partition[1], communicator);
 
-    effective_solution = solution;
-
     // First the pressure, using the pressure Schur complement of the first
     // two equations:
     {
       m_inverse.vmult(tmp, system_rhs.block(0));
       system_matrix.block(1, 0).vmult(schur_rhs, tmp);
       schur_rhs -= system_rhs.block(1);
-
 
       SchurComplement schur_complement(system_matrix, m_inverse,
                                        locally_owned_dofs_partition[0], communicator);
@@ -1249,7 +1254,6 @@ namespace Step21 {
 
       m_inverse.vmult(effective_solution.block(0), tmp);
     }
-    solution = effective_solution;
     // Finally, we have to take care of the saturation equation. The first
     // business we have here is to determine the time step using the formula
     // in the introduction. Knowing the shape of our domain and that we
@@ -1262,6 +1266,7 @@ namespace Step21 {
     // The maximal velocity we compute using a helper function to compute the
     // maximal velocity defined below, and with all this we can evaluate our
     // new time step length:
+    solution = effective_solution;
     time_step = std::pow(0.5, double(n_refinement_steps)) / get_maximal_velocity();
 
     // The next step is to assemble the right hand side, and then to pass
@@ -1378,7 +1383,7 @@ namespace Step21 {
                                                 Vector<double>(dim + 2));
     double                      max_local_velocity = 0;
 
-    for(const auto &cell : dof_handler.active_cell_iterators()) {
+    for(const auto& cell : dof_handler.active_cell_iterators()) {
       if(cell->is_locally_owned()) {
         fe_values.reinit(cell);
         fe_values.get_function_values(solution, solution_values);
